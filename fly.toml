@@ -3,6 +3,12 @@ primary_region = "lhr"
 
 [build]
 
+[env]
+# Not a secret — it is the public site this renders. Here rather than in
+# `fly secrets` so it turns up in a diff, and so the secret list stays limited
+# to things that would actually matter if they leaked.
+SITE_URL = "https://www.engaging.engineering"
+
 [http_service]
 internal_port = 8080
 force_https = false
