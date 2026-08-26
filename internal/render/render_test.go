@@ -1,0 +1,127 @@
+package render
+
+import (
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/go-rod/rod/lib/launcher"
+)
+
+// page mirrors the shape the real CV has: one .wrapper carrying the border,
+// with enough content to spill past a single sheet. That is all fillLastPage
+// depends on, so the test needs no network and no Hygraph.
+func page(paragraphs int) string {
+	var b strings.Builder
+	b.WriteString(`<!doctype html><html><head><meta charset="utf-8">
+	<style>
+	  body { margin: 0; font-family: sans-serif; }
+	  .wrapper { border: 2px solid #333; padding: 8px; }
+	  p { margin: 0 0 14px; }
+	</style></head><body><div class="wrapper">`)
+
+	for i := range paragraphs {
+		fmt.Fprintf(&b, "<p>Paragraph %d — content that occupies vertical space.</p>", i)
+	}
+
+	b.WriteString(`</div></body></html>`)
+
+	return b.String()
+}
+
+// browser is shared: launching Chrome is the slow part, and every case here
+// wants the same one.
+func browser(t *testing.T) *Browser {
+	t.Helper()
+
+	path, found := launcher.LookPath()
+	if !found {
+		t.Skip("no Chrome on this machine")
+	}
+
+	b, err := Launch(path)
+	if err != nil {
+		t.Fatalf("launching chrome: %v", err)
+	}
+	t.Cleanup(b.Close)
+
+	return b
+}
+
+func serve(t *testing.T, html string) string {
+	t.Helper()
+
+	server := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("content-type", "text/html")
+			_, _ = w.Write([]byte(html))
+		}))
+	t.Cleanup(server.Close)
+
+	return server.URL
+}
+
+func TestPDFRendersAMultiPageDocument(t *testing.T) {
+	b := browser(t)
+	url := serve(t, page(120))
+
+	pdf, err := b.PDF(url)
+	if err != nil {
+		t.Fatalf("rendering: %v", err)
+	}
+
+	if !strings.HasPrefix(string(pdf[:5]), "%PDF-") {
+		t.Fatalf("not a PDF: %q", pdf[:16])
+	}
+
+	pages, err := PageCount(pdf)
+	if err != nil {
+		t.Fatalf("reading page count: %v", err)
+	}
+	if pages < 2 {
+		t.Errorf("expected the document to span pages, got %d", pages)
+	}
+
+	// Puppeteer's default, and the reason for --export-tagged-pdf: without it
+	// the PDF has no accessibility structure tree.
+	if !strings.Contains(string(pdf), "/StructTreeRoot") {
+		t.Error("expected a tagged PDF with a structure tree")
+	}
+}
+
+// A page that fits on one sheet cannot be padded without adding a second, so
+// the search must decline rather than pad it anyway. The render still has to
+// succeed — the border is cosmetic and a short one beats no PDF.
+func TestPDFSurvivesAPageThatCannotBeFilled(t *testing.T) {
+	b := browser(t)
+	url := serve(t, page(1))
+
+	pdf, err := b.PDF(url)
+	if err != nil {
+		t.Fatalf("rendering should not fail on an unfillable page: %v", err)
+	}
+
+	pages, err := PageCount(pdf)
+	if err != nil {
+		t.Fatalf("reading page count: %v", err)
+	}
+	if pages != 1 {
+		t.Errorf("expected a single page, got %d", pages)
+	}
+}
+
+func TestPDFReportsNavigationFailures(t *testing.T) {
+	b := browser(t)
+
+	if _, err := b.PDF("http://127.0.0.1:1/nothing-here"); err == nil {
+		t.Fatal("expected an error navigating to a dead address")
+	}
+}
+
+func TestLaunchRejectsAMissingBinary(t *testing.T) {
+	if _, err := Launch("/nonexistent/chrome"); err == nil {
+		t.Fatal("expected an error for a missing browser binary")
+	}
+}

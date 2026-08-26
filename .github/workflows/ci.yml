@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - name: Format
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+
+      # The render tests drive the Chrome the runner already carries. They skip
+      # rather than fail without one, so the coverage line below is what proves
+      # they actually ran.
+      #
+      # Coverage is measured over internal/ only: cmd/worker is a composition
+      # root with nothing to assert, and including it reports a number that
+      # does not match the badge.
+      - name: Test
+        run: go test ./internal/... -coverprofile=cover.out
+
+      - name: Coverage
+        run: go tool cover -func=cover.out | tail -1
+
+      - name: Build
+        run: go build ./...
