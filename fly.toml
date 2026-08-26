@@ -1,0 +1,35 @@
+app = "engaging-worker"
+primary_region = "lhr"
+
+[build]
+
+[http_service]
+internal_port = 8080
+force_https = false
+
+# The proxy may wake this machine; it must never stop it.
+#
+# Autostart is how a job reaches a sleeping worker at all: an XADD to Redis
+# cannot start a Fly machine, so the API tier pings this service over its
+# Flycast address after enqueueing. Only proxy-routed traffic autostarts a
+# machine — .internal bypasses the proxy and will not.
+auto_start_machines = true
+
+# Autostop is driven by concurrency, and this worker holds one request for
+# milliseconds and then renders for twenty seconds with no open connection.
+# The proxy would read that as an idle machine and is free to stop it
+# mid-Chrome. So the worker owns its own lifecycle instead: it drains the
+# queue and exits 0, which leaves the machine stopped.
+auto_stop_machines = "off"
+min_machines_running = 0
+
+# No [[http_service.checks]] on purpose. This image carries Chrome and boots
+# in the region of twenty seconds; a grace period shorter than that guarantees
+# a failed check on every deploy. See engaging-service#17, which is the same
+# mistake made once already.
+
+[[vm]]
+# Headless Chrome is memory-hungry; 1GB is the floor for reliable rendering.
+memory = "1gb"
+cpu_kind = "shared"
+cpus = 1
