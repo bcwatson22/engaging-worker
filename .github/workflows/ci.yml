@@ -27,9 +27,14 @@ jobs:
       - name: Vet
         run: go vet ./...
 
-      - uses: golangci/golangci-lint-action@v6
+      # v7 or later is required for golangci-lint v2, and v9 runs on Node 24
+      # rather than the Node 20 the runner now warns about. The linter version
+      # is pinned rather than tracking latest, for the same reason the sibling
+      # repos pin oxlint: a release that adds a check should fail on the PR
+      # that bumps it, not on an unrelated one.
+      - uses: golangci/golangci-lint-action@v9
         with:
-          version: latest
+          version: v2.13.1
 
       # A stray dependency or a hand-edited go.mod shows up here rather than as
       # a mystery build failure later.
