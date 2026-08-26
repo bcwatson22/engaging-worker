@@ -2,18 +2,24 @@ name: CI
 
 on:
   push:
-    branches: [main]
   pull_request:
 
-jobs:
-  ci:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+# Nothing here needs write access. The deploy job, when it lands, will ask for
+# what it needs rather than inheriting it.
+permissions:
+  contents: read
 
-      - uses: actions/setup-go@v5
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
-          go-version: "1.26"
+          # Tracks go.mod, so CI cannot drift from the Dockerfile.
+          go-version-file: go.mod
+          cache: true
 
       - name: Format
         run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
@@ -21,23 +27,64 @@ jobs:
       - name: Vet
         run: go vet ./...
 
-      - name: Lint
-        uses: golangci/golangci-lint-action@v6
+      - uses: golangci/golangci-lint-action@v6
         with:
           version: latest
 
-      # The render tests drive the Chrome the runner already carries. They skip
-      # rather than fail without one, so the coverage line below is what proves
-      # they actually ran.
-      #
-      # Coverage is measured over internal/ only: cmd/worker is a composition
-      # root with nothing to assert, and including it reports a number that
-      # does not match the badge.
-      - name: Test
-        run: go test ./internal/... -coverprofile=cover.out
+      # A stray dependency or a hand-edited go.mod shows up here rather than as
+      # a mystery build failure later.
+      - name: Tidy
+        run: go mod tidy && git diff --exit-code go.mod go.sum
 
+      # -race because Phase 2 gives this worker goroutines, and a data race
+      # found the week it is introduced is a different problem from one found
+      # in a render that failed at three in the morning.
+      #
+      # Coverage over internal/ only: cmd/worker is a composition root with
+      # nothing to assert, and including it reports a number that does not
+      # match the badge.
+      #
+      # The render tests drive the Chrome the runner already carries. They skip
+      # rather than fail without one, so the coverage floor below is what
+      # proves they actually ran.
+      - name: Test
+        run: go test -race ./internal/... -coverprofile=cover.out
+
+      # Go has no built-in threshold, so this is the equivalent of the 100%
+      # gates in the sibling repos. The floor sits below the current figure
+      # rather than at it: the gap is browser error paths that need a
+      # deliberately broken Chrome, and pinning it exactly would fail on noise.
       - name: Coverage
-        run: go tool cover -func=cover.out | tail -1
+        run: |
+          total=$(go tool cover -func=cover.out | awk '/^total:/ {print $3}' | tr -d '%')
+          echo "coverage: ${total}%"
+          awk -v t="$total" 'BEGIN { exit (t < 85) }' || {
+            echo "::error::coverage ${total}% is below the 85% floor"
+            exit 1
+          }
+
+      # Runs with no secrets in scope, so tracking the newest scanner is the
+      # right trade here — unlike the deploy action below, which is pinned.
+      - name: Vulnerabilities
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
       - name: Build
         run: go build ./...
+
+  image:
+    # Only on pull requests. `flyctl deploy` builds the image itself, so on
+    # main this would build the same Dockerfile twice; the value here is
+    # catching a broken build before merge, not after.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+      # The deployed artifact is the image, not the binary `go build` produces.
+      # This one installs Chromium and its fonts, which is most of what can
+      # break and none of what the Go toolchain checks.
+      - run: docker build -t engaging-worker .
+
+  # No deploy job yet: the Fly app does not exist until Phase 2. When it does,
+  # it follows engaging-service's shape — needs [verify] alone, main only, a
+  # queueing concurrency group, and a commit-pinned setup-flyctl.

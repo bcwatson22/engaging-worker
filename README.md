@@ -1,7 +1,7 @@
 # Engaging Worker
 
 [![CI](https://github.com/bcwatson22/engaging-worker/actions/workflows/ci.yml/badge.svg)](https://github.com/bcwatson22/engaging-worker/actions/workflows/ci.yml)
-![Coverage 89.5%](https://img.shields.io/badge/coverage-89.5%25-2EBB4F?labelColor=343B42)
+![Coverage 89%](https://img.shields.io/badge/coverage-89%25-2EBB4F?labelColor=343B42)
 
 Render worker for [engaging.engineering](https://www.engaging.engineering) — headless-Chrome artifacts in [Go](https://go.dev/), asleep until there's work. It is the render half of [engaging-service](https://github.com/bcwatson22/engaging-service), split into its own deployable so the request-time tier stops carrying a browser. The site itself lives in [engaging](https://github.com/bcwatson22/engaging).
 
@@ -172,7 +172,11 @@ runs by hand. Secrets will live in Fly rather than in CI, validated at boot by
 
 ## Coverage
 
-89.5% across `internal/`. The gap is browser error paths — Chrome disconnecting mid-render, a PDF
-stream that fails to read — which need a deliberately broken browser to reach and are not worth
-the machinery. `cmd/worker` is a composition root and is excluded; it is covered by running the
-thing.
+Around 89% across `internal/`, with CI failing below 85%. The gap is browser error paths — Chrome
+disconnecting mid-render, a PDF stream that fails to read — which need a deliberately broken
+browser to reach and are not worth the machinery. `cmd/worker` is a composition root and is
+excluded; it is covered by running the thing.
+
+The floor sits below the current figure rather than at it. Pinning it exactly would fail on
+noise: which browser error paths get exercised moves the total by a tenth of a percent between
+runs.
