@@ -56,15 +56,15 @@ jobs:
         run: go test -race ./internal/... -coverprofile=cover.out
 
       # Go has no built-in threshold, so this is the equivalent of the 100%
-      # gates in the sibling repos. The floor sits below the current figure
-      # rather than at it: the gap is browser error paths that need a
-      # deliberately broken Chrome, and pinning it exactly would fail on noise.
+      # gates in the sibling repos — and set to the same number, because the
+      # render logic sits behind an interface and every branch of it is
+      # reachable without a browser that has agreed to fail.
       - name: Coverage
         run: |
           total=$(go tool cover -func=cover.out | awk '/^total:/ {print $3}' | tr -d '%')
           echo "coverage: ${total}%"
-          awk -v t="$total" 'BEGIN { exit (t < 85) }' || {
-            echo "::error::coverage ${total}% is below the 85% floor"
+          awk -v t="$total" 'BEGIN { exit (t < 100) }' || {
+            echo "::error::coverage ${total}% is below 100%"
             exit 1
           }
 

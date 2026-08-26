@@ -2,13 +2,9 @@ package render
 
 import (
 	"fmt"
-	"io"
 	"log/slog"
 	"regexp"
 	"strconv"
-
-	"github.com/go-rod/rod"
-	"github.com/go-rod/rod/lib/proto"
 )
 
 const (
@@ -50,6 +46,11 @@ const applyFiller = `(id, height) => {
   document.querySelector('.wrapper')?.append(filler);
 }`
 
+// Puppeteer defaults waitForFonts to true, and there is no CDP parameter for
+// it — it awaits document.fonts.ready itself. Without this the webfont can be
+// missing from the output while every other check still passes.
+const fontsReady = `() => document.fonts.ready.then(() => true)`
+
 // ErrNoPageCount means the generated PDF had no readable page tree, which
 // should be impossible and is worth failing on rather than guessing around.
 var ErrNoPageCount = fmt.Errorf("could not read the page count from the generated PDF")
@@ -71,8 +72,7 @@ func PageCount(pdf []byte) (int, error) {
 }
 
 // searchFill finds the largest filler height that still fits the same number
-// of pages. Split out from the page so the fidelity-critical part is testable
-// without a browser.
+// of pages.
 func searchFill(base int, count func(int) (int, error)) (int, error) {
 	spilled, err := count(maxFill)
 	if err != nil {
@@ -102,34 +102,14 @@ func searchFill(base int, count func(int) (int, error)) (int, error) {
 	return fits, nil
 }
 
-// printPDF renders the page as it currently stands.
-//
-// Puppeteer defaults waitForFonts to true, and there is no CDP parameter for
-// it — it awaits document.fonts.ready itself. Without this the webfont can be
-// missing from the output while every other check still passes.
-func printPDF(page *rod.Page) ([]byte, error) {
-	if _, err := page.Eval(`() => document.fonts.ready.then(() => true)`); err != nil {
+// printPDF waits for fonts, then renders the page as it currently stands.
+func printPDF(p page) ([]byte, error) {
+	if err := p.eval(fontsReady); err != nil {
 		return nil, fmt.Errorf("waiting for fonts: %w", err)
 	}
 
-	stream, err := page.PDF(&proto.PagePrintToPDF{
-		PaperWidth:        ptr(paperWidthIn),
-		PaperHeight:       ptr(paperHeightIn),
-		MarginTop:         ptr(marginIn),
-		MarginBottom:      ptr(marginIn),
-		MarginLeft:        ptr(marginIn),
-		MarginRight:       ptr(marginIn),
-		PrintBackground:   false,
-		GenerateTaggedPDF: generateTagged,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("printing pdf: %w", err)
-	}
-
-	return io.ReadAll(stream)
+	return p.print()
 }
-
-func ptr[T any](v T) *T { return &v }
 
 // fillLastPage grows the wrapper so its bottom border lands flush with the
 // final page break.
@@ -138,13 +118,13 @@ func ptr[T any](v T) *T { return &v }
 // where the content ends rather than at the bottom of the last page. The page
 // height isn't knowable up front, so the fill is binary-searched against real
 // renders — about thirteen of them, which is most of a render's wall time.
-func fillLastPage(page *rod.Page) error {
+func fillLastPage(p page) error {
 	count := func(height int) (int, error) {
-		if _, err := page.Eval(applyFiller, fillerID, height); err != nil {
+		if err := p.eval(applyFiller, fillerID, height); err != nil {
 			return 0, err
 		}
 
-		pdf, err := printPDF(page)
+		pdf, err := printPDF(p)
 		if err != nil {
 			return 0, err
 		}
@@ -162,7 +142,7 @@ func fillLastPage(page *rod.Page) error {
 		return err
 	}
 
-	if _, err := page.Eval(applyFiller, fillerID, fits); err != nil {
+	if err := p.eval(applyFiller, fillerID, fits); err != nil {
 		return err
 	}
 
@@ -171,27 +151,21 @@ func fillLastPage(page *rod.Page) error {
 	return nil
 }
 
-// PDF renders url to a PDF.
-func (b *Browser) PDF(url string) ([]byte, error) {
-	page, err := b.browser.Page(proto.TargetCreateTarget{})
-	if err != nil {
-		return nil, fmt.Errorf("opening page: %w", err)
-	}
-	defer func() { _ = page.Close() }()
-
+// renderPDF loads url and prints it, padding the last page on the way.
+func renderPDF(p page, url string) ([]byte, error) {
 	// The closest analogue to Puppeteer's waitUntil:'networkidle0' — go-rod
 	// counts in-flight requests rather than relying on a lifecycle event.
-	wait := page.MustWaitRequestIdle()
-	if err := page.Navigate(url); err != nil {
+	wait := p.waitRequestIdle()
+	if err := p.navigate(url); err != nil {
 		return nil, fmt.Errorf("navigating to %s: %w", url, err)
 	}
 	wait()
 
 	// Cosmetic only — a short border beats a failed render, which is the same
 	// call the Nest implementation makes.
-	if err := fillLastPage(page); err != nil {
+	if err := fillLastPage(p); err != nil {
 		slog.Warn("could not fill the last PDF page", "err", err)
 	}
 
-	return printPDF(page)
+	return printPDF(p)
 }
