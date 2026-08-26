@@ -10,10 +10,10 @@ import (
 	"github.com/go-rod/rod/lib/launcher"
 )
 
-// page mirrors the shape the real CV has: one .wrapper carrying the border,
+// pageHTML mirrors the shape the real CV has: one .wrapper carrying the border,
 // with enough content to spill past a single sheet. That is all fillLastPage
 // depends on, so the test needs no network and no Hygraph.
-func page(paragraphs int) string {
+func pageHTML(paragraphs int) string {
 	var b strings.Builder
 	b.WriteString(`<!doctype html><html><head><meta charset="utf-8">
 	<style>
@@ -65,7 +65,7 @@ func serve(t *testing.T, html string) string {
 
 func TestPDFRendersAMultiPageDocument(t *testing.T) {
 	b := browser(t)
-	url := serve(t, page(120))
+	url := serve(t, pageHTML(120))
 
 	pdf, err := b.PDF(url)
 	if err != nil {
@@ -96,7 +96,7 @@ func TestPDFRendersAMultiPageDocument(t *testing.T) {
 // succeed — the border is cosmetic and a short one beats no PDF.
 func TestPDFSurvivesAPageThatCannotBeFilled(t *testing.T) {
 	b := browser(t)
-	url := serve(t, page(1))
+	url := serve(t, pageHTML(1))
 
 	pdf, err := b.PDF(url)
 	if err != nil {
@@ -123,5 +123,35 @@ func TestPDFReportsNavigationFailures(t *testing.T) {
 func TestLaunchRejectsAMissingBinary(t *testing.T) {
 	if _, err := Launch("/nonexistent/chrome"); err == nil {
 		t.Fatal("expected an error for a missing browser binary")
+	}
+}
+
+// The deployed image sets CHROME_PATH, but locally it is empty and the
+// installed browser is found instead. That branch only runs when the path is
+// genuinely empty, so it needs its own case.
+func TestLaunchFindsAnInstalledBrowser(t *testing.T) {
+	if _, found := launcher.LookPath(); !found {
+		t.Skip("no Chrome on this machine")
+	}
+
+	b, err := Launch("")
+	if err != nil {
+		t.Fatalf("expected an installed browser to be found: %v", err)
+	}
+	b.Close()
+}
+
+// The adapter's own error path: a closed page cannot be printed.
+func TestPrintOnAClosedPageFails(t *testing.T) {
+	b := browser(t)
+
+	p, err := b.newPage()
+	if err != nil {
+		t.Fatalf("opening page: %v", err)
+	}
+	p.close()
+
+	if _, err := p.print(); err == nil {
+		t.Fatal("expected printing a closed page to fail")
 	}
 }
