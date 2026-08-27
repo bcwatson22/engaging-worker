@@ -102,7 +102,13 @@ func consume(cfg *config.Config, prefix string) error {
 		Client: &http.Client{Timeout: 30 * time.Second},
 	}
 
-	consumer := queue.New(client, queue.Options{Consumer: consumerName()})
+	consumer := queue.New(client, queue.Options{
+		Consumer: consumerName(),
+		// Named rather than inherited: zero would mean "exit the moment the
+		// stream is empty", which would stop the machine between two artifacts
+		// queued by the same publish.
+		DrainAfter: queue.DefaultDrainAfter,
+	})
 
 	slog.Info("consuming", "stream", queue.Stream, "consumer", consumerName())
 

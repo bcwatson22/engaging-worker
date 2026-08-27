@@ -52,6 +52,12 @@ const (
 	// DrainAfter is how long the stream must stay empty before the worker
 	// gives up and exits, which is what stops the Fly machine. Long enough
 	// that a second artifact queued moments later is not missed.
+	//
+	// Unlike the other options this one is *not* filled in from its zero
+	// value: zero means "exit as soon as the stream is empty", which is a
+	// thing a caller may legitimately want, and silently replacing it with
+	// thirty seconds makes that impossible to ask for. Callers that want the
+	// default pass it by name.
 	DefaultDrainAfter = 30 * time.Second
 
 	// deadLetterMax caps the dead-letter stream. BullMQ had removeOnFail; a
@@ -88,7 +94,8 @@ type Consumer struct {
 	opts   Options
 }
 
-// New builds a consumer, filling in any option left at its zero value.
+// New builds a consumer, filling in any option left at its zero value —
+// except DrainAfter, where zero is meaningful. See DefaultDrainAfter.
 func New(client *redis.Client, opts Options) *Consumer {
 	if opts.MinIdle == 0 {
 		opts.MinIdle = DefaultMinIdle
@@ -98,9 +105,6 @@ func New(client *redis.Client, opts Options) *Consumer {
 	}
 	if opts.IdleFloor == 0 {
 		opts.IdleFloor = DefaultIdleFloor
-	}
-	if opts.DrainAfter == 0 {
-		opts.DrainAfter = DefaultDrainAfter
 	}
 	if opts.Attempts == 0 {
 		opts.Attempts = DefaultAttempts

@@ -22,7 +22,14 @@ func setup(t *testing.T, options func(*Options)) (*Consumer, *redis.Client, *min
 	// RESP2, matching the production client: go-redis negotiates RESP3 by
 	// default and then blocks in its push-notification reader against a server
 	// that does not fully implement it.
-	client := redis.NewClient(&redis.Options{Addr: server.Addr(), Protocol: 2})
+	client := redis.NewClient(&redis.Options{
+		Addr: server.Addr(), Protocol: 2,
+		// No internal retries. This consumer's whole retry policy is its own
+		// ErrorFloor; leaving go-redis to retry underneath it adds hundreds of
+		// milliseconds of backoff per broken command and makes a test of the
+		// floor a test of the driver instead.
+		MaxRetries: -1,
+	})
 	t.Cleanup(func() { _ = client.Close() })
 
 	now := time.Now()
@@ -31,7 +38,10 @@ func setup(t *testing.T, options func(*Options)) (*Consumer, *redis.Client, *min
 		MinIdle:    0,
 		ErrorFloor: time.Millisecond,
 		IdleFloor:  time.Millisecond,
-		DrainAfter: time.Minute,
+		// Zero, so an empty read exits immediately. With a drain window the
+		// fake clock has to be walked across it one IdleFloor at a time, which
+		// is tens of thousands of round trips to miniredis per test.
+		DrainAfter: 0,
 		Sleep:      func(d time.Duration) { now = now.Add(d) },
 		Now:        func() time.Time { return now },
 	}
@@ -113,7 +123,7 @@ func TestNewFillsInDefaults(t *testing.T) {
 
 	if c.opts.MinIdle != DefaultMinIdle || c.opts.Attempts != DefaultAttempts ||
 		c.opts.Backoff != DefaultBackoff || c.opts.ErrorFloor != DefaultErrorFloor ||
-		c.opts.DrainAfter != DefaultDrainAfter || c.opts.IdleFloor != DefaultIdleFloor {
+		c.opts.IdleFloor != DefaultIdleFloor {
 		t.Errorf("defaults not applied: %+v", c.opts)
 	}
 	if c.opts.Sleep == nil || c.opts.Now == nil || c.opts.Consumer == "" {
@@ -159,7 +169,6 @@ func TestRunProcessesAndAcks(t *testing.T) {
 	enqueue(t, client, validPayload())
 
 	var seen []Job
-	c.opts.DrainAfter = 0 // exit as soon as there is nothing left
 
 	if err := c.Run(context.Background(), func(_ context.Context, j Job) error {
 		seen = append(seen, j)
@@ -184,7 +193,7 @@ func TestRunProcessesAndAcks(t *testing.T) {
 
 // Exiting is the point: it is what stops the Fly machine.
 func TestRunExitsOnceDrained(t *testing.T) {
-	c, _, _ := setup(t, func(o *Options) { o.DrainAfter = 0 })
+	c, _, _ := setup(t, nil)
 
 	done := make(chan error, 1)
 	go func() { done <- c.Run(context.Background(), func(context.Context, Job) error { return nil }) }()
@@ -200,7 +209,7 @@ func TestRunExitsOnceDrained(t *testing.T) {
 }
 
 func TestRunRetriesThenDeadLetters(t *testing.T) {
-	c, client, _ := setup(t, func(o *Options) { o.DrainAfter = 0; o.Attempts = 3 })
+	c, client, _ := setup(t, func(o *Options) { o.Attempts = 3 })
 	enqueue(t, client, validPayload())
 
 	attempts := 0
@@ -232,7 +241,7 @@ func TestRunRetriesThenDeadLetters(t *testing.T) {
 }
 
 func TestRunDeadLettersAnUnreadablePayload(t *testing.T) {
-	c, client, _ := setup(t, func(o *Options) { o.DrainAfter = 0 })
+	c, client, _ := setup(t, nil)
 	enqueue(t, client, "{not json")
 
 	called := false
@@ -257,7 +266,7 @@ func TestRunDeadLettersAnUnreadablePayload(t *testing.T) {
 // The entire justification for a queue: work a crashed consumer was holding
 // has to come back.
 func TestRunReclaimsAbandonedWork(t *testing.T) {
-	c, client, _ := setup(t, func(o *Options) { o.DrainAfter = 0 })
+	c, client, _ := setup(t, nil)
 	// Set after construction: New reads a zero MinIdle as "unset" and fills in
 	// the five-minute default, which nothing in a test is old enough to meet.
 	c.opts.MinIdle = 0
@@ -292,7 +301,9 @@ func TestRunReclaimsAbandonedWork(t *testing.T) {
 // The defence against engaging-service#24: a read that fails must never be
 // retried tight.
 func TestRunFloorsFailingReads(t *testing.T) {
-	c, _, server := setup(t, nil)
+	// A drain window, so the loop keeps going long enough to fail a read.
+	// With none, the first empty read exits before Redis is ever broken.
+	c, _, server := setup(t, func(o *Options) { o.DrainAfter = time.Minute })
 	ctx, cancel := context.WithCancel(context.Background())
 
 	// Break Redis only once Run is under way, so the failure lands on a read
@@ -334,7 +345,7 @@ func TestRunFloorsFailingReads(t *testing.T) {
 // Acking and dead-lettering both happen after the work is done, so a Redis
 // that fails at that moment must be logged rather than crash the worker.
 func TestRunSurvivesRedisFailingAfterTheWork(t *testing.T) {
-	c, client, server := setup(t, func(o *Options) { o.DrainAfter = 0 })
+	c, client, server := setup(t, nil)
 	enqueue(t, client, validPayload())
 
 	handled := 0
@@ -355,7 +366,7 @@ func TestRunSurvivesRedisFailingAfterTheWork(t *testing.T) {
 }
 
 func TestRunSurvivesAFailedDeadLetter(t *testing.T) {
-	c, client, server := setup(t, func(o *Options) { o.DrainAfter = 0; o.Attempts = 1 })
+	c, client, server := setup(t, func(o *Options) { o.Attempts = 1 })
 	enqueue(t, client, validPayload())
 
 	err := c.Run(context.Background(), func(context.Context, Job) error {
@@ -413,5 +424,40 @@ func TestRunReportsAFailingRead(t *testing.T) {
 
 	if err == nil || !strings.Contains(err.Error(), "read refused") {
 		t.Fatalf("expected the read failure to surface, got %v", err)
+	}
+}
+
+// Zero is a value, not an omission: a caller that wants to exit the moment the
+// stream is empty must be able to say so. New fills in every other option from
+// its zero value, which made this one impossible to express.
+func TestNewKeepsAZeroDrainWindow(t *testing.T) {
+	if c := New(nil, Options{DrainAfter: 0}); c.opts.DrainAfter != 0 {
+		t.Errorf("a zero drain window should be honoured, got %v", c.opts.DrainAfter)
+	}
+}
+
+// The other side of it: a positive window holds the worker open across a gap,
+// so two artifacts queued by one publish do not each pay a cold boot.
+func TestRunWaitsOutTheDrainWindow(t *testing.T) {
+	c, _, _ := setup(t, func(o *Options) {
+		o.DrainAfter = 10 * time.Millisecond
+		o.IdleFloor = time.Millisecond
+	})
+
+	polls := 0
+	base := c.opts.Sleep
+	c.opts.Sleep = func(d time.Duration) {
+		polls++
+		base(d)
+	}
+
+	if err := c.Run(context.Background(), func(context.Context, Job) error { return nil }); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Ten idle floors to cross ten milliseconds, rather than exiting on the
+	// first empty read.
+	if polls < 10 {
+		t.Errorf("expected the worker to wait out the window, polled %d times", polls)
 	}
 }
