@@ -48,6 +48,22 @@ type Worker struct {
 	Client   *http.Client
 }
 
+// hashKey namespaces the last-rendered hash by where the artifact was written.
+//
+// engaging-service records its own renders under the bare artifact key, and
+// while both services render the same publish they must not share that key.
+// Whichever finished first would record the new hash, and the other's
+// unchanged-content check would then refuse to render at all — so the parallel
+// run this split depends on would quietly produce one output instead of two to
+// compare, looking like a broken worker rather than a collision.
+//
+// Deriving it from Prefix means one switch moves both the object and its hash:
+// with candidate/ the two services are independent, and at cutover the prefix
+// empties and this becomes exactly the key engaging-service already uses.
+func (w *Worker) hashKey(artifact render.Artifact) string {
+	return w.Prefix + artifact.Key
+}
+
 // artifacts maps a job name to what it renders.
 var artifacts = map[string]render.Artifact{
 	"cv-pdf": render.CVPDF,
@@ -62,7 +78,7 @@ func (w *Worker) Handle(ctx context.Context, job queue.Job) error {
 
 	url := w.SiteURL + artifact.Path
 
-	live, err := w.assertChanged(ctx, url, artifact.Key, job.Force)
+	live, err := w.assertChanged(ctx, url, w.hashKey(artifact), job.Force)
 	if err != nil {
 		return err
 	}
@@ -90,7 +106,7 @@ func (w *Worker) Handle(ctx context.Context, job queue.Job) error {
 
 	// Recorded only after a successful upload, so a failed render retries
 	// against the same previous hash rather than being treated as done.
-	if err := w.Store.Set(ctx, artifact.Key, live); err != nil {
+	if err := w.Store.Set(ctx, w.hashKey(artifact), live); err != nil {
 		return err
 	}
 

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/bcwatson22/engaging-worker/internal/queue"
+	"github.com/bcwatson22/engaging-worker/internal/render"
 )
 
 var errFake = errors.New("something broke")
@@ -105,8 +106,13 @@ func TestHandleRendersAndRecords(t *testing.T) {
 	if string(uploader.body) != "%PDF-1.4" {
 		t.Errorf("uploaded %q", uploader.body)
 	}
-	if store.set["billy-watson-cv.pdf"] == "" {
-		t.Error("should record the hash it rendered")
+	// Namespaced by the same prefix as the object, so engaging-service's own
+	// record of what it last rendered is untouched while both run.
+	if store.set["candidate/billy-watson-cv.pdf"] == "" {
+		t.Errorf("should record the hash under the candidate key, got %+v", store.set)
+	}
+	if _, clashed := store.set["billy-watson-cv.pdf"]; clashed {
+		t.Error("must not write the key engaging-service records its own renders under")
 	}
 	if renderer.closes != 1 {
 		t.Errorf("browser should be closed exactly once, got %d", renderer.closes)
@@ -241,6 +247,24 @@ func TestShort(t *testing.T) {
 	for in, want := range cases {
 		if got := short(in); got != want {
 			t.Errorf("short(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// The cutover is meant to be a prefix change and nothing else: with the prefix
+// emptied, both the object key and the hash key become exactly the ones
+// engaging-service already uses.
+func TestHashKeyFollowsThePrefix(t *testing.T) {
+	cases := map[string]string{
+		"candidate/": "candidate/billy-watson-cv.pdf",
+		"":           "billy-watson-cv.pdf",
+	}
+
+	for prefix, want := range cases {
+		w := &Worker{Prefix: prefix}
+
+		if got := w.hashKey(render.CVPDF); got != want {
+			t.Errorf("prefix %q: want %q, got %q", prefix, want, got)
 		}
 	}
 }

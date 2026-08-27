@@ -90,6 +90,37 @@ jobs:
       # break and none of what the Go toolchain checks.
       - run: docker build -t engaging-worker .
 
-  # No deploy job yet: the Fly app does not exist until Phase 2. When it does,
-  # it follows engaging-service's shape — needs [verify] alone, main only, a
-  # queueing concurrency group, and a commit-pinned setup-flyctl.
+  deploy:
+    # Depends on `verify` alone, deliberately. A skipped job counts as unmet in
+    # GitHub Actions, so needing `image` — which is skipped on main — would
+    # skip this too and nothing would ever deploy. Nothing is lost: the deploy
+    # builds the same Dockerfile, so a broken image fails the deploy rather
+    # than shipping past it.
+    needs: [verify]
+    # The workflow triggers on every push and every pull request, so without
+    # this a branch push would deploy.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+
+    # Deploys queue rather than race. Not cancel-in-progress: interrupting a
+    # half-finished deploy leaves the app in a worse state than waiting does.
+    concurrency:
+      group: deploy-worker
+      cancel-in-progress: false
+
+    steps:
+      - uses: actions/checkout@v7
+      # Pinned to a commit rather than @master, which is what Fly's own docs
+      # suggest: this step runs with a deploy token in scope, so it should not
+      # be whatever was pushed to their default branch this morning.
+      # ed8efb3 is tags 1.6 and v1 as of 2026-08-17.
+      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1
+      # Built on Fly's builders rather than this runner, so the image is
+      # produced next to where it is deployed.
+      #
+      # A deploy replaces the machine. Nothing waits on this service — a render
+      # interrupted mid-flight stays unacked and is reclaimed by XAUTOCLAIM on
+      # the next wake, which is the case the queue exists to handle.
+      - run: flyctl deploy --remote-only
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
