@@ -13,6 +13,7 @@ func setup(env map[string]string) func(string) string {
 func valid() map[string]string {
 	return map[string]string{
 		"SITE_URL":             "https://www.engaging.engineering",
+		"REDIS_URL":            "rediss://default:secret@example.upstash.io:6379",
 		"R2_ACCOUNT_ID":        "acct",
 		"R2_ACCESS_KEY_ID":     "key",
 		"R2_SECRET_ACCESS_KEY": "secret",
@@ -62,7 +63,7 @@ func TestLoadReportsEveryIssue(t *testing.T) {
 	}
 
 	for _, key := range []string{
-		"SITE_URL", "R2_ACCOUNT_ID", "R2_ACCESS_KEY_ID",
+		"SITE_URL", "REDIS_URL", "R2_ACCOUNT_ID", "R2_ACCESS_KEY_ID",
 		"R2_SECRET_ACCESS_KEY", "R2_BUCKET", "R2_PUBLIC_BASE",
 	} {
 		if !strings.Contains(err.Error(), key) {

@@ -14,8 +14,9 @@ import (
 // misconfigured deploy should fail at boot rather than on the first render
 // that happens to need it.
 type Config struct {
-	Port    int
-	SiteURL string
+	Port     int
+	SiteURL  string
+	RedisURL string
 
 	R2AccountID       string
 	R2AccessKeyID     string
@@ -66,6 +67,7 @@ func Load(getenv func(string) string) (*Config, error) {
 	cfg := &Config{
 		Port:              defaultPort,
 		SiteURL:           requiredURL("SITE_URL"),
+		RedisURL:          required("REDIS_URL"),
 		R2AccountID:       required("R2_ACCOUNT_ID"),
 		R2AccessKeyID:     required("R2_ACCESS_KEY_ID"),
 		R2SecretAccessKey: required("R2_SECRET_ACCESS_KEY"),

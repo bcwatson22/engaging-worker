@@ -33,6 +33,19 @@ Render worker for [engaging.engineering](https://www.engaging.engineering) — h
   </tr>
 </table>
 
+### Redis Streams
+
+<table>
+  <tr>
+    <td width="58">
+      <img src="https://cdn.simpleicons.org/redis/FF4438/FF4438" alt="Redis icon" width="32" />
+    </td>
+    <td>
+      A stream and a consumer group, replacing BullMQ — which stopped being an implementation detail the moment the two ends were different languages. Durability, at-least-once delivery and orphan recovery, over a payload both repos can read. See <a href="#the-queue-contract">below</a>.
+    </td>
+  </tr>
+</table>
+
 ### Cloudflare R2
 
 <table>
@@ -139,11 +152,60 @@ started  │ start │ flyd
 stopped  │ exit  │ flyd     ← exit_code=0, requested_stop=false
 ```
 
+## The queue contract
+
+`engaging-service` enqueues; this consumes. The queue between them is the part worth explaining,
+because the obvious choices are mostly wrong.
+
+**Not BullMQ.** Its payloads, retry bookkeeping and state transitions live in Redis keys whose
+layout is an implementation detail, free to change in a minor release. Consuming that from Go
+means coupling to an undocumented format. A stream with a consumer group gives the same
+durability, at-least-once delivery and orphan recovery, explicitly, over a payload both ends can
+read:
+
+```json
+{ "v": 1, "job": "cv-pdf", "contentHash": "…", "requestedAt": "…", "force": false }
+```
+
+The version is checked, not assumed: a payload carrying anything else is dead-lettered rather
+than interpreted optimistically.
+
+**Polled, not blocked.** `XREADGROUP BLOCK` is the obvious way to wait, and it is the one thing
+this deliberately avoids. `engaging-service#24` was a blocking read degrading under quota
+pressure — Upstash stopped blocking, and an idle worker became a hot loop at roughly ten reads a
+second, ~155,000 commands a day. A deliberate one-second poll cannot degrade that way: it costs
+one command a second whatever the server does, which over the couple of minutes this worker is
+alive per job is a rounding error. The failure mode is designed out rather than guarded against.
+
+**`XAUTOCLAIM` min-idle is five minutes**, which has to exceed the worst-case job: about twenty
+seconds of render plus the 150-second retry ladder. Set it lower and a second consumer reclaims
+work the first is still healthily doing — and that failure is silent, because both then succeed
+and `XPENDING` returns to zero.
+
+**Giving up is bounded twice.** A job gets five attempts on an exponential ladder before going to
+a dead-letter stream, acked either way so it stops being reclaimed forever. And ten consecutive
+failed reads end the run: the error floor stops a hot loop, but on its own it would still spin
+indefinitely, and a worker that never returns is a machine that never stops.
+
+## Two contracts, not one
+
+The payload is the visible contract. The quieter one is `content-hash:<artifact>` — the Redis key
+recording what was last rendered, which `engaging-service` also reads and writes. Both repos hash
+the live page and compare, so the hash function itself has to agree byte for byte.
+
+That is harder than it sounds across languages. JavaScript's `\s` includes the Unicode spaces —
+non-breaking space above all, which HTML is full of — and Go's does not. Left as `\s+` the port
+agrees with the service on most pages and silently disagrees on any page containing an `&nbsp;`,
+which is the worst kind of bug: rare, content-dependent, and indistinguishable from the page
+having genuinely changed. The character class is spelled out for that reason, and the tests hash
+fixtures against values produced by `engaging-service`'s own implementation rather than a
+reimplementation of it.
+
 ## Status
 
-**Phase 1.** The render is proven in Go and writes to a `candidate/` key prefix, so nothing the
-site links to has moved. The queue contract, the cutover and the startup images follow in later
-phases; `engaging-service` still produces every artifact the site actually uses.
+**Phase 2.** The render is proven in Go, the queue contract is implemented, and output still goes
+to a `candidate/` key prefix so nothing the site links to has moved. Both workers run in parallel
+until the cutover; `engaging-service` still produces every artifact the site actually uses.
 
 ## Development
 
@@ -152,8 +214,11 @@ Copy `.env.example` to `.env` and fill it in. Any installed Chrome is found auto
 
 ```bash
 go test ./...            # unit tests, plus real-Chrome render tests
-go run ./cmd/worker      # serves /health
+go run ./cmd/worker      # consumes the queue until drained, then exits
 ```
+
+The queue tests run against an in-memory Redis, so nothing external is needed. `go run` does want
+a real one — set `REDIS_URL` to a local container or an Upstash database.
 
 Render the live CV once, writing to the candidate prefix:
 
