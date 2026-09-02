@@ -262,6 +262,17 @@ func (c *Consumer) process(ctx context.Context, m redis.XMessage, handle Handler
 			return
 		}
 
+		// A permanent failure will fail the same way on attempt five, so the
+		// ladder is spent holding the machine awake for nothing. Observed on
+		// the first real publish: an artifact this worker does not implement
+		// yet took two and a half minutes of backoff to reach the dead letter
+		// it was always going to reach.
+		if errors.Is(err, ErrPermanent) {
+			c.giveUp(ctx, m, err, attempt)
+
+			return
+		}
+
 		slog.Warn("attempt failed", "id", m.ID, "job", job.Job,
 			"attempt", attempt, "of", c.opts.Attempts, "err", err)
 
