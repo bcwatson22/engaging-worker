@@ -3,6 +3,7 @@ package queue
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -459,5 +460,67 @@ func TestRunWaitsOutTheDrainWindow(t *testing.T) {
 	// first empty read.
 	if polls < 10 {
 		t.Errorf("expected the worker to wait out the window, polled %d times", polls)
+	}
+}
+
+// A permanent failure fails the same way on attempt five, so spending the
+// ladder on it just holds the machine awake. Observed on the first real
+// publish: an artifact the worker does not implement took two and a half
+// minutes of backoff to reach a dead letter it was always going to reach.
+func TestRunDeadLettersAPermanentFailureAtOnce(t *testing.T) {
+	c, client, _ := setup(t, func(o *Options) { o.Attempts = 5 })
+	enqueue(t, client, validPayload())
+
+	attempts := 0
+	slept := 0
+	base := c.opts.Sleep
+	c.opts.Sleep = func(d time.Duration) {
+		if d == c.opts.Backoff {
+			slept++
+		}
+		base(d)
+	}
+
+	if err := c.Run(context.Background(), func(context.Context, Job) error {
+		attempts++
+
+		return fmt.Errorf("%w: unknown artifact", ErrPermanent)
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if attempts != 1 {
+		t.Errorf("expected one attempt, got %d", attempts)
+	}
+	if slept != 0 {
+		t.Errorf("expected no backoff, slept %d times", slept)
+	}
+
+	dead, err := client.XLen(context.Background(), DeadLetter).Result()
+	if err != nil {
+		t.Fatalf("reading the dead letters: %v", err)
+	}
+	if dead != 1 {
+		t.Errorf("expected one dead letter, got %d", dead)
+	}
+}
+
+// Everything else stays transient: a render that failed once may well succeed
+// on the next attempt, which is what the ladder is for.
+func TestRunStillRetriesOrdinaryFailures(t *testing.T) {
+	c, client, _ := setup(t, func(o *Options) { o.Attempts = 3 })
+	enqueue(t, client, validPayload())
+
+	attempts := 0
+	if err := c.Run(context.Background(), func(context.Context, Job) error {
+		attempts++
+
+		return errHandler
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if attempts != 3 {
+		t.Errorf("expected the full ladder, got %d attempts", attempts)
 	}
 }

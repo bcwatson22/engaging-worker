@@ -73,7 +73,10 @@ var artifacts = map[string]render.Artifact{
 func (w *Worker) Handle(ctx context.Context, job queue.Job) error {
 	artifact, ok := artifacts[job.Job]
 	if !ok {
-		return fmt.Errorf("unknown artifact %q", job.Job)
+		// Permanent: retrying will not teach this worker an artifact it does
+		// not implement. startup-images arrives on every publish until the
+		// fan-out is ported, and without this it costs the full ladder.
+		return fmt.Errorf("%w: unknown artifact %q", queue.ErrPermanent, job.Job)
 	}
 
 	url := w.SiteURL + artifact.Path

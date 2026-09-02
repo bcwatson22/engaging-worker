@@ -10,6 +10,7 @@ package queue
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 )
 
@@ -75,3 +76,12 @@ func Encode(job Job) string {
 
 	return string(b)
 }
+
+// ErrPermanent marks a failure that retrying cannot fix — an unreadable
+// payload, or an artifact this worker does not implement. Wrap it and the
+// consumer dead-letters immediately instead of spending the retry ladder, and
+// the machine stops that much sooner.
+//
+// Everything else is assumed transient: a render that failed once may well
+// succeed on the next attempt, which is the case the ladder exists for.
+var ErrPermanent = errors.New("permanent failure")
