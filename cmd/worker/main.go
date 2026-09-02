@@ -29,13 +29,20 @@ import (
 	"github.com/bcwatson22/engaging-worker/internal/worker"
 )
 
-// candidatePrefix keeps output away from anything the site links to until the
-// cutover, which is where this becomes empty.
-const candidatePrefix = "candidate/"
+// productionPrefix is empty: this worker now writes the keys the site links
+// to. It rendered to candidate/ through phases 1 to 3 while engaging-service
+// still produced the real artifacts, and four publishes produced
+// pixel-identical output before this changed.
+//
+// The hash key is derived from the same prefix, so this one value moved both:
+// the worker now tracks the real artifact's last-rendered state rather than
+// the candidate's. Pass -prefix candidate/ to render a comparison copy again
+// without touching anything the site links to.
+const productionPrefix = ""
 
 func main() {
 	artifact := flag.String("render", "", "render an artifact once and exit (cv-pdf)")
-	prefix := flag.String("prefix", candidatePrefix, "object key prefix")
+	prefix := flag.String("prefix", productionPrefix, "object key prefix")
 	out := flag.String("out", "", "also write the result to this local path")
 	flag.Parse()
 
