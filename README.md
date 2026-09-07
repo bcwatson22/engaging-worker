@@ -203,9 +203,14 @@ reimplementation of it.
 
 ## Status
 
-**Phase 2.** The render is proven in Go, the queue contract is implemented, and output still goes
-to a `candidate/` key prefix so nothing the site links to has moved. Both workers run in parallel
-until the cutover; `engaging-service` still produces every artifact the site actually uses.
+**Phase 3, cut over.** This worker now produces the CV PDF the site links to. It rendered to a
+`candidate/` prefix alongside `engaging-service` first, and four publishes — two forced, two real
+— produced **pixel-identical** output at 150dpi before the prefix was emptied.
+
+The publish race was exercised in production on the way: the worker refused to render while the
+site was still serving its previous content, backed off, and succeeded on the retry.
+
+Still with `engaging-service`: the 22-image PWA splash-screen fan-out, which is the next phase.
 
 ## Development
 
@@ -220,14 +225,15 @@ go run ./cmd/worker      # consumes the queue until drained, then exits
 The queue tests run against an in-memory Redis, so nothing external is needed. `go run` does want
 a real one — set `REDIS_URL` to a local container or an Upstash database.
 
-Render the live CV once, writing to the candidate prefix:
+Render the live CV once, out of band:
 
 ```bash
 go run ./cmd/worker -render cv-pdf
 ```
 
-Add `-out ./local.pdf` to keep a local copy, or `-prefix ''` to write the real key — which
-nothing should do until the cutover.
+That writes the real key. Add `-out ./local.pdf` to keep a local copy, or
+`-prefix candidate/` to produce a comparison copy without touching anything the site links to —
+which is how the cutover was checked and remains the safe way to test a change to the render.
 
 ## Deployment
 
