@@ -201,6 +201,37 @@ having genuinely changed. The character class is spelled out for that reason, an
 fixtures against values produced by `engaging-service`'s own implementation rather than a
 reimplementation of it.
 
+## What a render actually costs
+
+A render takes **about 38 seconds on the first job after a wake, and about 4.5 on every job
+after it**. Both numbers are real and the gap is worth explaining, because the obvious reading —
+that the Go port is eight times slower than the Node one it replaced — is wrong.
+
+Fly's root filesystem reads at roughly **10 MB/s cold**, and Chromium is **337 MB**. The first
+render after a machine wakes spends around thirty seconds faulting the browser in from storage.
+After that it is in the page cache and the same code renders in four and a half seconds.
+
+Measured three ways, which all agree:
+
+| | |
+| --- | --- |
+| Two jobs in one boot | 36,345ms, then 4,513ms |
+| Phases within one render | the whole gap precedes the filler; the final pass and upload take 0.89s |
+| Reading 40 MB of Chromium | 4,059ms cold against 7ms warm — ~34s extrapolated for all 337 MB |
+
+`engaging-service` rendered the same page in about five seconds, which looked like a regression
+and was not: that container never sleeps, so it had already paid this cost once and never paid it
+again. Sleeping is what makes the difference, not the language.
+
+**It is not per-job, it is per-wake.** A publish enqueues every artifact and they are handled in
+one boot, so only the first pays. That is why porting the 22-image fan-out does not multiply it.
+
+Nothing waits on a render, so this buys nobody anything and is not optimised. The option, if it
+ever mattered: a headless-shell browser is 80–150 MB rather than 337, which would cut the cold
+fault roughly in proportion. It is the older headless implementation and can produce different
+PDF output, so it would need the whole pixel comparison re-run against it — worth recording as a
+measured option rather than doing on a hunch.
+
 ## Status
 
 **Phase 3, cut over.** This worker now produces the CV PDF the site links to. It rendered to a
