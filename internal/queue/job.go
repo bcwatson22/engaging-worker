@@ -36,6 +36,11 @@ type Job struct {
 	ContentHash string `json:"contentHash"`
 	RequestedAt string `json:"requestedAt"`
 	Force       bool   `json:"force"`
+
+	// Attempt is which pass this is, counting from one. Set by the consumer
+	// rather than carried in the payload — the producer cannot know it, and
+	// the handler needs it to record what a render cost.
+	Attempt int `json:"-"`
 }
 
 // ErrVersion means the producer is speaking a version this worker does not

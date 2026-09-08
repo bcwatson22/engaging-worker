@@ -24,6 +24,7 @@ import (
 	"github.com/bcwatson22/engaging-worker/internal/config"
 	"github.com/bcwatson22/engaging-worker/internal/hash"
 	"github.com/bcwatson22/engaging-worker/internal/queue"
+	"github.com/bcwatson22/engaging-worker/internal/records"
 	"github.com/bcwatson22/engaging-worker/internal/render"
 	"github.com/bcwatson22/engaging-worker/internal/storage"
 	"github.com/bcwatson22/engaging-worker/internal/worker"
@@ -103,6 +104,7 @@ func consume(cfg *config.Config, prefix string) error {
 		SiteURL: cfg.SiteURL,
 		Prefix:  prefix,
 		Store:   hash.NewStore(client),
+		History: records.New(client, nil),
 		Uploader: storage.New(cfg.R2AccountID, cfg.R2AccessKeyID, cfg.R2SecretAccessKey,
 			cfg.R2Bucket, cfg.R2PublicBase),
 		Launch: func() (worker.Renderer, error) { return render.Launch(cfg.ChromePath) },
@@ -152,6 +154,7 @@ func renderOnce(cfg *config.Config, name, prefix, out string) error {
 		SiteURL: cfg.SiteURL,
 		Prefix:  prefix,
 		Store:   hash.NewStore(client),
+		History: records.New(client, nil),
 		Uploader: storage.New(cfg.R2AccountID, cfg.R2AccessKeyID, cfg.R2SecretAccessKey,
 			cfg.R2Bucket, cfg.R2PublicBase),
 		Launch: func() (worker.Renderer, error) { return render.Launch(cfg.ChromePath) },

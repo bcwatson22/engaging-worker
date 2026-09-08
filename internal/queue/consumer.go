@@ -254,6 +254,7 @@ func (c *Consumer) process(ctx context.Context, m redis.XMessage, handle Handler
 	}
 
 	for attempt := 1; attempt <= c.opts.Attempts; attempt++ {
+		job.Attempt = attempt
 		err = handle(ctx, job)
 		if err == nil {
 			c.ack(ctx, m.ID)

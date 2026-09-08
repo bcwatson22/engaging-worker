@@ -7,8 +7,10 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bcwatson22/engaging-worker/internal/queue"
+	"github.com/bcwatson22/engaging-worker/internal/records"
 	"github.com/bcwatson22/engaging-worker/internal/render"
 )
 
@@ -53,6 +55,19 @@ func (f *fakeUploader) Upload(_ context.Context, key string, body []byte, _, _ s
 	}
 
 	return "https://pub.r2.dev/" + key, f.err
+}
+
+type fakeHistory struct {
+	added    []records.Record
+	artifact string
+	err      error
+}
+
+func (f *fakeHistory) Add(_ context.Context, artifact string, r records.Record) error {
+	f.artifact = artifact
+	f.added = append(f.added, r)
+
+	return f.err
 }
 
 type fakeRenderer struct {
@@ -355,5 +370,67 @@ func TestHandleDoesNotRecordAPartialStartupUpload(t *testing.T) {
 	}
 	if uploader.count != 3 {
 		t.Errorf("expected it to stop at the failure, uploaded %d", uploader.count)
+	}
+}
+
+// The status endpoint engaging-service serves reads these; nothing else writes
+// them now that rendering has moved.
+func TestHandleRecordsWhatTheRenderCost(t *testing.T) {
+	history := &fakeHistory{}
+	w, _, _, _ := setup(t, func(w *Worker, _ *fakeStore, _ *fakeUploader, _ *fakeRenderer) {
+		w.History = history
+	})
+
+	job := queue.Job{
+		V: queue.Version, Job: CVPDFJob, Force: true, Attempt: 2,
+		RequestedAt: time.Now().Add(-30 * time.Second).UTC().Format(time.RFC3339),
+	}
+
+	if err := w.Handle(context.Background(), job); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(history.added) != 1 {
+		t.Fatalf("expected one record, got %d", len(history.added))
+	}
+
+	got := history.added[0]
+	if history.artifact != CVPDFJob {
+		t.Errorf("recorded under %q", history.artifact)
+	}
+	if got.Attempts != 2 {
+		t.Errorf("attempts: got %d", got.Attempts)
+	}
+	// The gap between elapsed and duration is the publish race made visible,
+	// which is the only place that number exists once the logs are gone.
+	if got.ElapsedMs < 29_000 {
+		t.Errorf("elapsed should span from enqueue, got %d", got.ElapsedMs)
+	}
+	if got.Result == "" {
+		t.Error("expected the result to be recorded")
+	}
+}
+
+/*
+Best-effort and deliberately last: the artifact is already published, so a
+
+	missed status entry beats a render reported as failed and retried.
+*/
+func TestHandleSurvivesAFailedRecord(t *testing.T) {
+	w, _, _, _ := setup(t, func(w *Worker, _ *fakeStore, _ *fakeUploader, _ *fakeRenderer) {
+		w.History = &fakeHistory{err: errFake}
+	})
+
+	if err := w.Handle(context.Background(), job()); err != nil {
+		t.Fatalf("a failed record must not fail the render: %v", err)
+	}
+}
+
+// The one-off CLI path has no history to write to.
+func TestHandleWithoutAHistory(t *testing.T) {
+	w, _, _, _ := setup(t, nil)
+
+	if err := w.Handle(context.Background(), job()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
