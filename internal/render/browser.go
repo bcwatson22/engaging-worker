@@ -4,6 +4,7 @@ package render
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/launcher"
@@ -18,6 +19,9 @@ type Browser struct {
 	// that fails, without a browser being involved at all.
 	newPage func() (page, error)
 	cleanup func()
+	// sleep is the settle delay between a splash-screen page loading and being
+	// captured. Injected so tests do not wait two seconds per device.
+	sleep func(time.Duration)
 }
 
 // startChrome resolves a browser and starts it, returning the control URL and
@@ -86,6 +90,7 @@ func launch(
 	}
 
 	return &Browser{
+		sleep: time.Sleep,
 		newPage: pageFactory(func() (*rod.Page, error) {
 			return browser.Page(proto.TargetCreateTarget{})
 		}),

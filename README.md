@@ -128,6 +128,35 @@ page-count comparison will not catch any of them.
 With them applied, the worker's output is **pixel-identical** to the Puppeteer implementation
 across all three pages, rasterised at 150dpi.
 
+## The splash screens, and why they cannot be diffed
+
+The PWA manifest advertises a splash screen for eleven device profiles across two pages —
+twenty-two PNGs, each at exact pixel dimensions the manifest keys its media queries on. Chrome
+emulates the device rather than the window being resized, because the ratio has to be applied by
+the browser or the images come out the wrong size.
+
+Captures are sequential and each gets a two-second settle delay. Both are deliberate: twenty-two
+page loads at once in a 1 GB container would swap rather than finish sooner, and a screenshot
+taken before the entry animation completes captures a half-faded page, which looks broken rather
+than absent.
+
+**The PDF was verified by pixel comparison. These cannot be**, and finding that out was the
+interesting part. Comparing this implementation against the Node one it replaces showed 16 of 22
+images differing — until the same check was run against Node twice, which differed on **20 of
+22**. The pages animate, so no two captures of them are ever identical and pixel equality is not
+a property they have.
+
+What is checkable is whether this implementation is any less faithful than the one it replaces,
+and it is not:
+
+| | mean size delta | worst |
+| --- | --- | --- |
+| Node against itself, run to run | 1.93% | 18.47% |
+| Go against Node | 1.68% | 18.46% |
+
+Along with the checks that *are* deterministic: twenty-two files, the filenames the manifest
+expects, and every image at exactly the dimensions its own name advertises.
+
 ## Why the worker sleeps itself
 
 Fly's `auto_stop_machines` is driven by concurrency, and this worker holds one HTTP request for
@@ -210,7 +239,10 @@ reimplementation of it.
 The publish race was exercised in production on the way: the worker refused to render while the
 site was still serving its previous content, backed off, and succeeded on the retry.
 
-Still with `engaging-service`: the 22-image PWA splash-screen fan-out, which is the next phase.
+**Phase 4 in progress.** The splash-screen fan-out is now ported here too, though
+`engaging-service` still owns it in production until `WORKER_ARTIFACTS` says otherwise. What
+remains after that is subtraction: deleting the render code from that repo, taking Chrome out of
+its image, and dropping it from 1 GB to 256 MB.
 
 ## Development
 

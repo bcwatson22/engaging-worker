@@ -29,6 +29,7 @@ type Uploader interface {
 // Renderer opens a browser. Injectable so a test never launches Chrome.
 type Renderer interface {
 	PDF(url string) ([]byte, error)
+	StartupImages(siteURL string) ([]render.StartupImage, error)
 	Close()
 }
 
@@ -64,9 +65,16 @@ func (w *Worker) hashKey(artifact render.Artifact) string {
 	return w.Prefix + artifact.Key
 }
 
+// Job names, matching the payload engaging-service writes.
+const (
+	CVPDFJob         = "cv-pdf"
+	StartupImagesJob = "startup-images"
+)
+
 // artifacts maps a job name to what it renders.
 var artifacts = map[string]render.Artifact{
-	"cv-pdf": render.CVPDF,
+	CVPDFJob:         render.CVPDF,
+	StartupImagesJob: render.StartupImagesArtifact,
 }
 
 // Handle renders one job.
@@ -74,14 +82,16 @@ func (w *Worker) Handle(ctx context.Context, job queue.Job) error {
 	artifact, ok := artifacts[job.Job]
 	if !ok {
 		// Permanent: retrying will not teach this worker an artifact it does
-		// not implement. startup-images arrives on every publish until the
-		// fan-out is ported, and without this it costs the full ladder.
+		// not implement, and attempt five fails exactly as attempt one did.
 		return fmt.Errorf("%w: unknown artifact %q", queue.ErrPermanent, job.Job)
 	}
 
-	url := w.SiteURL + artifact.Path
+	urls := make([]string, 0, len(artifact.Paths))
+	for _, path := range artifact.Paths {
+		urls = append(urls, w.SiteURL+path)
+	}
 
-	live, err := w.assertChanged(ctx, url, w.hashKey(artifact), job.Force)
+	live, err := w.assertChanged(ctx, urls, w.hashKey(artifact), job.Force)
 	if err != nil {
 		return err
 	}
@@ -96,33 +106,74 @@ func (w *Worker) Handle(ctx context.Context, job queue.Job) error {
 	// container.
 	defer browser.Close()
 
-	pdf, err := browser.PDF(url)
+	published, err := w.publish(ctx, browser, job.Job, artifact, urls)
 	if err != nil {
 		return err
 	}
 
-	public, err := w.Uploader.Upload(ctx, w.Prefix+artifact.Key, pdf,
-		artifact.ContentType, artifact.CacheControl)
-	if err != nil {
-		return err
-	}
-
-	// Recorded only after a successful upload, so a failed render retries
-	// against the same previous hash rather than being treated as done.
+	// Recorded only after every upload has succeeded, so a run that failed
+	// part-way retries against the same previous hash rather than being
+	// treated as done.
 	if err := w.Store.Set(ctx, w.hashKey(artifact), live); err != nil {
 		return err
 	}
 
-	slog.Info("artifact published", "url", public, "bytes", len(pdf),
+	slog.Info("artifact published", "job", job.Job, "result", published,
 		"ms", time.Since(start).Milliseconds())
 
 	return nil
 }
 
+// publish renders and uploads, and reports what it produced — a public URL for
+// the PDF, a count for the splash screens, which have no single URL between
+// them.
+func (w *Worker) publish(
+	ctx context.Context,
+	browser Renderer,
+	job string,
+	artifact render.Artifact,
+	urls []string,
+) (string, error) {
+	if job == StartupImagesJob {
+		return w.uploadStartupImages(ctx, browser, artifact)
+	}
+
+	pdf, err := browser.PDF(urls[0])
+	if err != nil {
+		return "", err
+	}
+
+	return w.Uploader.Upload(ctx, w.Prefix+artifact.Key, pdf,
+		artifact.ContentType, artifact.CacheControl)
+}
+
+// uploadStartupImages uploads sequentially, so a failure part-way leaves the
+// earlier images uploaded and the hash unrecorded — the retry simply
+// overwrites them.
+func (w *Worker) uploadStartupImages(
+	ctx context.Context,
+	browser Renderer,
+	artifact render.Artifact,
+) (string, error) {
+	captured, err := browser.StartupImages(w.SiteURL)
+	if err != nil {
+		return "", err
+	}
+
+	for _, image := range captured {
+		if _, err := w.Uploader.Upload(ctx, w.Prefix+image.Key, image.Image,
+			artifact.ContentType, artifact.CacheControl); err != nil {
+			return "", err
+		}
+	}
+
+	return fmt.Sprintf("%d startup images", len(captured)), nil
+}
+
 // assertChanged returns the live hash, refusing to render while the site is
 // still serving what was rendered last time.
-func (w *Worker) assertChanged(ctx context.Context, url, artifactKey string, force bool) (string, error) {
-	live, err := hash.Combined(ctx, w.Client, []string{url})
+func (w *Worker) assertChanged(ctx context.Context, urls []string, artifactKey string, force bool) (string, error) {
+	live, err := hash.Combined(ctx, w.Client, urls)
 	if err != nil {
 		return "", err
 	}

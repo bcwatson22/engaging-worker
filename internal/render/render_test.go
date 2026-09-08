@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-rod/rod/lib/launcher"
 )
@@ -153,5 +154,52 @@ func TestPrintOnAClosedPageFails(t *testing.T) {
 
 	if _, err := p.print(); err == nil {
 		t.Fatal("expected printing a closed page to fail")
+	}
+}
+
+// The adapter's screenshot path against a real browser: emulation applied by
+// Chrome, and a PNG of the right pixel size out the other end.
+func TestCaptureAgainstARealBrowser(t *testing.T) {
+	b := browser(t)
+	url := serve(t, pageHTML(4))
+
+	device := Device{Width: 390, Height: 844, Ratio: 3}
+
+	p, err := b.newPage()
+	if err != nil {
+		t.Fatalf("opening page: %v", err)
+	}
+	defer p.close()
+
+	png, err := capture(p, url, device, func(time.Duration) {})
+	if err != nil {
+		t.Fatalf("capturing: %v", err)
+	}
+
+	if len(png) < 8 || string(png[1:4]) != "PNG" {
+		t.Fatalf("not a PNG: %q", png[:min(8, len(png))])
+	}
+
+	// Bytes 16-24 of a PNG header are width and height, big-endian. The
+	// manifest advertises these exact dimensions, so the device scale factor
+	// has to have been applied by Chrome rather than lost.
+	width := int(png[16])<<24 | int(png[17])<<16 | int(png[18])<<8 | int(png[19])
+	if want := device.Width * device.Ratio; width != want {
+		t.Errorf("expected %dpx wide, got %d", want, width)
+	}
+}
+
+// The adapter's other error path: a closed page cannot be emulated either.
+func TestSetViewportOnAClosedPageFails(t *testing.T) {
+	b := browser(t)
+
+	p, err := b.newPage()
+	if err != nil {
+		t.Fatalf("opening page: %v", err)
+	}
+	p.close()
+
+	if err := p.setViewport(Device{Width: 390, Height: 844, Ratio: 3}); err == nil {
+		t.Fatal("expected setting a viewport on a closed page to fail")
 	}
 }

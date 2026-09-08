@@ -38,22 +38,52 @@ type fakeUploader struct {
 	err  error
 	key  string
 	body []byte
+	// count and failAfter exist for the splash screens, which upload
+	// twenty-two objects rather than one.
+	count     int
+	failAfter int
 }
 
 func (f *fakeUploader) Upload(_ context.Context, key string, body []byte, _, _ string) (string, error) {
 	f.key, f.body = key, body
+	f.count++
+
+	if f.failAfter > 0 && f.count >= f.failAfter {
+		return "", errFake
+	}
 
 	return "https://pub.r2.dev/" + key, f.err
 }
 
 type fakeRenderer struct {
-	pdf    []byte
-	err    error
-	closes int
+	pdf        []byte
+	err        error
+	startupErr error
+	closes     int
 }
 
 func (f *fakeRenderer) PDF(string) ([]byte, error) { return f.pdf, f.err }
-func (f *fakeRenderer) Close()                     { f.closes++ }
+
+func (f *fakeRenderer) StartupImages(string) ([]render.StartupImage, error) {
+	if f.startupErr != nil {
+		return nil, f.startupErr
+	}
+
+	captured := make([]render.StartupImage, 0,
+		len(render.StartupPages)*len(render.StartupDevices))
+
+	for _, p := range render.StartupPages {
+		for _, d := range render.StartupDevices {
+			captured = append(captured, render.StartupImage{
+				Key: render.StartupKey(p.Name, d), Image: []byte("PNG"),
+			})
+		}
+	}
+
+	return captured, nil
+}
+
+func (f *fakeRenderer) Close() { f.closes++ }
 
 // setup builds a worker over a stub site, with everything succeeding unless a
 // case says otherwise.
@@ -165,7 +195,7 @@ func hashOfStubSite(t *testing.T, w *Worker) (string, error) {
 
 	stub := &Worker{SiteURL: w.SiteURL, Client: w.Client, Store: &fakeStore{}}
 
-	return stub.assertChanged(context.Background(), w.SiteURL+"/cv", "unused", true)
+	return stub.assertChanged(context.Background(), []string{w.SiteURL + "/cv"}, "unused", true)
 }
 
 func TestHandleReportsFailures(t *testing.T) {
@@ -177,7 +207,7 @@ func TestHandleReportsFailures(t *testing.T) {
 	}{
 		{
 			name: "an artifact it does not know",
-			job:  queue.Job{V: queue.Version, Job: "startup-images"},
+			job:  queue.Job{V: queue.Version, Job: "og-images"},
 			want: "unknown artifact",
 		},
 		{
@@ -266,5 +296,64 @@ func TestHashKeyFollowsThePrefix(t *testing.T) {
 		if got := w.hashKey(render.CVPDF); got != want {
 			t.Errorf("prefix %q: want %q, got %q", prefix, want, got)
 		}
+	}
+}
+
+// The splash-screen set: two pages at eleven device sizes, uploaded one at a
+// time under the same prefix as everything else.
+func TestHandleCapturesEveryStartupImage(t *testing.T) {
+	w, store, uploader, _ := setup(t, nil)
+
+	err := w.Handle(context.Background(), queue.Job{
+		V: queue.Version, Job: StartupImagesJob, Force: true,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	want := len(render.StartupPages) * len(render.StartupDevices)
+	if uploader.count != want {
+		t.Errorf("expected %d uploads, got %d", want, uploader.count)
+	}
+
+	// Namespaced like the PDF, so the candidate run cannot disturb what
+	// engaging-service records for its own.
+	if store.set["candidate/startup-images"] == "" {
+		t.Errorf("should record the hash under the candidate key, got %+v", store.set)
+	}
+}
+
+func TestHandleReportsAStartupCaptureFailure(t *testing.T) {
+	w, _, _, _ := setup(t, func(_ *Worker, _ *fakeStore, _ *fakeUploader, r *fakeRenderer) {
+		r.startupErr = errFake
+	})
+
+	err := w.Handle(context.Background(), queue.Job{
+		V: queue.Version, Job: StartupImagesJob, Force: true,
+	})
+	if !errors.Is(err, errFake) {
+		t.Fatalf("want the underlying error, got %v", err)
+	}
+}
+
+// A failure part-way leaves the earlier images uploaded and the hash
+// unrecorded, so the retry overwrites them rather than skipping them.
+func TestHandleDoesNotRecordAPartialStartupUpload(t *testing.T) {
+	w, store, uploader, _ := setup(t, func(_ *Worker, _ *fakeStore, u *fakeUploader, _ *fakeRenderer) {
+		u.failAfter = 3
+	})
+
+	err := w.Handle(context.Background(), queue.Job{
+		V: queue.Version, Job: StartupImagesJob, Force: true,
+	})
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+
+	if len(store.set) != 0 {
+		t.Errorf("a partial upload must not record a hash, got %+v", store.set)
+	}
+	if uploader.count != 3 {
+		t.Errorf("expected it to stop at the failure, uploaded %d", uploader.count)
 	}
 }
