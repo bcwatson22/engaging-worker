@@ -20,11 +20,15 @@ func pdfWith(pages int) []byte {
 // deliberately. The real adapter holds no logic, so nothing is lost by testing
 // the logic against this instead.
 type fakePage struct {
-	onNavigate func(string) error
-	onEval     func(js string, args ...any) error
-	onPrint    func() ([]byte, error)
-	closes     int
-	waits      int
+	onNavigate   func(string) error
+	onEval       func(js string, args ...any) error
+	onPrint      func() ([]byte, error)
+	onWaitLoad   func() error
+	onViewport   func(Device) error
+	onScreenshot func() ([]byte, error)
+	viewports    []Device
+	closes       int
+	waits        int
 }
 
 func (f *fakePage) navigate(url string) error {
@@ -51,6 +55,28 @@ func (f *fakePage) print() ([]byte, error) {
 }
 
 func (f *fakePage) close() { f.closes++ }
+
+func (f *fakePage) waitLoad() error {
+	if f.onWaitLoad != nil {
+		return f.onWaitLoad()
+	}
+	return nil
+}
+
+func (f *fakePage) setViewport(d Device) error {
+	f.viewports = append(f.viewports, d)
+	if f.onViewport != nil {
+		return f.onViewport(d)
+	}
+	return nil
+}
+
+func (f *fakePage) screenshot() ([]byte, error) {
+	if f.onScreenshot != nil {
+		return f.onScreenshot()
+	}
+	return []byte("\x89PNG"), nil
+}
 
 // spillingAt models a document of base pages that gains one once the filler
 // passes threshold — the only page behaviour the search depends on.

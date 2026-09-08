@@ -18,8 +18,11 @@ import (
 type page interface {
 	navigate(url string) error
 	waitRequestIdle() func()
+	waitLoad() error
+	setViewport(d Device) error
 	eval(js string, args ...any) error
 	print() ([]byte, error)
+	screenshot() ([]byte, error)
 	close()
 }
 
@@ -53,6 +56,37 @@ func (r rodPage) print() ([]byte, error) {
 	}
 
 	return io.ReadAll(stream)
+}
+
+// waitLoad is what the splash-screen captures wait on. Puppeteer's
+// waitUntil:'load' rather than networkidle0: these are screenshots of a page
+// that is then given a fixed settle delay anyway.
+func (r rodPage) waitLoad() error { return r.p.WaitLoad() }
+
+// setViewport emulates the device rather than resizing a window: the manifest
+// advertises these images at exact pixel dimensions, so the device scale
+// factor has to be applied by Chrome, not by scaling afterwards.
+func (r rodPage) setViewport(d Device) error {
+	if err := r.p.SetViewport(&proto.EmulationSetDeviceMetricsOverride{
+		Width:             d.Width,
+		Height:            d.Height,
+		DeviceScaleFactor: float64(d.Ratio),
+		Mobile:            true,
+	}); err != nil {
+		return err
+	}
+
+	// Puppeteer's hasTouch. A page can render differently for a touch device —
+	// hover styles, and anything gated on a pointer query.
+	return proto.EmulationSetTouchEmulationEnabled{
+		Enabled: true, MaxTouchPoints: ptr(5),
+	}.Call(r.p)
+}
+
+func (r rodPage) screenshot() ([]byte, error) {
+	return r.p.Screenshot(false, &proto.PageCaptureScreenshot{
+		Format: proto.PageCaptureScreenshotFormatPng,
+	})
 }
 
 func (r rodPage) close() { _ = r.p.Close() }

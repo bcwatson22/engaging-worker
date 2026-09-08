@@ -41,7 +41,7 @@ import (
 const productionPrefix = ""
 
 func main() {
-	artifact := flag.String("render", "", "render an artifact once and exit (cv-pdf)")
+	artifact := flag.String("render", "", "render an artifact once and exit (cv-pdf, startup-images)")
 	prefix := flag.String("prefix", productionPrefix, "object key prefix")
 	out := flag.String("out", "", "also write the result to this local path")
 	flag.Parse()
