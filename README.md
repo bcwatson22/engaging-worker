@@ -279,14 +279,15 @@ everything itself; the "after" is the two services as they run now.
 | --- | --- | --- |
 | Request-time tier image | 1.2 GB | **419 MB** |
 | Its VM | 1 GB | **256 MB** |
-| Its cost, always resident | ~$5.92/mo | ~$1.94/mo |
+| Its cost, always resident | ~£4.37/mo | ~£1.43/mo |
 | Its production dependencies | 15 | 11 |
 | Render worker image | — | 853 MB |
-| Worker cost | — | ~$0.20/mo, stopped |
-| **Total** | **~$5.92/mo** | **~$2.14/mo** |
+| Worker cost | — | ~£0.15/mo, stopped |
+| **Total** | **~£4.37/mo** | **~£1.58/mo** |
 
-About **$45 a year**, which is worth stating plainly: it is a rounding error, and it was never
-the reason to do this. The reason was that a tier a person waits on should not ship a browser.
+About **£33 a year**, which is worth stating plainly: it is a rounding error, and it was never
+the reason to do this. Fly bills in dollars — these are converted at 0.738, the rate on
+9 September 2026, and will drift with it. The reason was that a tier a person waits on should not ship a browser.
 
 The part that is actually interesting is where the weight went. The Node runtime — 121 MB of
 `node` plus 105 MB of modules — became a **15 MB static binary**. What did not move is Chromium:
