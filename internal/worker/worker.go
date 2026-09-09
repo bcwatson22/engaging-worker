@@ -11,6 +11,7 @@ import (
 
 	"github.com/bcwatson22/engaging-worker/internal/hash"
 	"github.com/bcwatson22/engaging-worker/internal/queue"
+	"github.com/bcwatson22/engaging-worker/internal/records"
 	"github.com/bcwatson22/engaging-worker/internal/render"
 )
 
@@ -33,6 +34,12 @@ type Renderer interface {
 	Close()
 }
 
+// History records what a render produced and what it cost, for the status
+// endpoint engaging-service serves.
+type History interface {
+	Add(ctx context.Context, artifact string, r records.Record) error
+}
+
 // Store records what was last rendered.
 type Store interface {
 	Get(ctx context.Context, artifact string) (string, error)
@@ -44,6 +51,7 @@ type Worker struct {
 	SiteURL  string
 	Prefix   string
 	Store    Store
+	History  History
 	Uploader Uploader
 	Launch   func() (Renderer, error)
 	Client   *http.Client
@@ -118,10 +126,34 @@ func (w *Worker) Handle(ctx context.Context, job queue.Job) error {
 		return err
 	}
 
+	duration := time.Since(start)
+
 	slog.Info("artifact published", "job", job.Job, "result", published,
-		"ms", time.Since(start).Milliseconds())
+		"ms", duration.Milliseconds())
+
+	w.record(ctx, job, published, duration)
 
 	return nil
+}
+
+// record is best-effort and deliberately last. The artifact is already
+// published by the time this runs, so a status page that misses an entry is a
+// far better outcome than a render reported as failed and retried — which
+// would re-render and re-upload something already correct.
+func (w *Worker) record(ctx context.Context, job queue.Job, result string, duration time.Duration) {
+	if w.History == nil {
+		return
+	}
+
+	err := w.History.Add(ctx, job.Job, records.Record{
+		Result:     result,
+		DurationMs: duration.Milliseconds(),
+		Attempts:   job.Attempt,
+		ElapsedMs:  records.Elapsed(job.RequestedAt, time.Now()),
+	})
+	if err != nil {
+		slog.Warn("could not record the render", "job", job.Job, "err", err)
+	}
 }
 
 // publish renders and uploads, and reports what it produced — a public URL for

@@ -216,7 +216,7 @@ a dead-letter stream, acked either way so it stops being reclaimed forever. And 
 failed reads end the run: the error floor stops a hot loop, but on its own it would still spin
 indefinitely, and a worker that never returns is a machine that never stops.
 
-## Two contracts, not one
+## Three contracts, not one
 
 The payload is the visible contract. The quieter one is `content-hash:<artifact>` — the Redis key
 recording what was last rendered, which `engaging-service` also reads and writes. Both repos hash
@@ -229,6 +229,15 @@ which is the worst kind of bug: rare, content-dependent, and indistinguishable f
 having genuinely changed. The character class is spelled out for that reason, and the tests hash
 fixtures against values produced by `engaging-service`'s own implementation rather than a
 reimplementation of it.
+
+The third is `render-history:<artifact>` — a capped Redis list of what each render produced and
+what it cost, which that service's status endpoint reads. It was written by the Nest processor
+until rendering moved here, and nothing else writes it now. Its shape is fixed by the reader, and
+the failure mode is quiet: a renamed field does not error, the status page simply drops the entry.
+
+Writing it is best-effort and deliberately the last thing a job does. The artifact is already
+published by then, so a missed status entry is a far better outcome than a render reported as
+failed and retried — which would re-render and re-upload something already correct.
 
 ## What a render actually costs
 
@@ -270,10 +279,13 @@ measured option rather than doing on a hunch.
 The publish race was exercised in production on the way: the worker refused to render while the
 site was still serving its previous content, backed off, and succeeded on the retry.
 
-**Phase 4 in progress.** The splash-screen fan-out is now ported here too, though
-`engaging-service` still owns it in production until `WORKER_ARTIFACTS` says otherwise. What
-remains after that is subtraction: deleting the render code from that repo, taking Chrome out of
-its image, and dropping it from 1 GB to 256 MB.
+**Phase 4 in progress.** The splash-screen fan-out is ported and cut over — both artifacts are
+now this worker's, and `engaging-service` enqueues nothing on BullMQ. This worker also writes the
+render history that service's status endpoint reports, which its processor wrote until rendering
+moved here.
+
+What remains is subtraction on that side: deleting its render code, taking Chrome out of its
+image, and dropping it from 1 GB to 256 MB.
 
 ## Development
 
