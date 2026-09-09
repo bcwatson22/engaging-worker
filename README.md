@@ -270,6 +270,34 @@ fault roughly in proportion. It is the older headless implementation and can pro
 PDF output, so it would need the whole pixel comparison re-run against it — worth recording as a
 measured option rather than doing on a hunch.
 
+## What the split actually bought
+
+Measured on Fly, not estimated. The "before" is `engaging-service` as it stood when it rendered
+everything itself; the "after" is the two services as they run now.
+
+| | before | after |
+| --- | --- | --- |
+| Request-time tier image | 1.2 GB | **419 MB** |
+| Its VM | 1 GB | **256 MB** |
+| Its cost, always resident | ~$5.92/mo | ~$1.94/mo |
+| Its production dependencies | 15 | 11 |
+| Render worker image | — | 853 MB |
+| Worker cost | — | ~$0.20/mo, stopped |
+| **Total** | **~$5.92/mo** | **~$2.14/mo** |
+
+About **$45 a year**, which is worth stating plainly: it is a rounding error, and it was never
+the reason to do this. The reason was that a tier a person waits on should not ship a browser.
+
+The part that is actually interesting is where the weight went. The Node runtime — 121 MB of
+`node` plus 105 MB of modules — became a **15 MB static binary**. What did not move is Chromium:
+337 MB here, 337 MB there, and it dominates this image exactly as it dominated the last one. The
+saving is entirely in what left the request-time tier, not in anything Go did.
+
+Two numbers that got worse, in fairness. A render is 38 seconds on the first job after a wake
+against roughly 5 before, for the reasons in the section above — a machine that sleeps pays a
+cold page cache, and one that never sleeps has already paid it. And there are two deployables to
+reason about where there was one, which is a real cost that no table shows.
+
 ## Status
 
 **Phase 3, cut over.** This worker now produces the CV PDF the site links to. It rendered to a
@@ -279,13 +307,10 @@ measured option rather than doing on a hunch.
 The publish race was exercised in production on the way: the worker refused to render while the
 site was still serving its previous content, backed off, and succeeded on the retry.
 
-**Phase 4 in progress.** The splash-screen fan-out is ported and cut over — both artifacts are
-now this worker's, and `engaging-service` enqueues nothing on BullMQ. This worker also writes the
-render history that service's status endpoint reports, which its processor wrote until rendering
-moved here.
-
-What remains is subtraction on that side: deleting its render code, taking Chrome out of its
-image, and dropping it from 1 GB to 256 MB.
+**Done.** Both artifacts are this worker's, `engaging-service` no longer carries a browser or a
+queue worker, and its VM is a quarter of the size it was. This worker also writes the render
+history that service's status endpoint reports, which its processor wrote until rendering moved
+here.
 
 ## Development
 
@@ -312,9 +337,23 @@ which is how the cutover was checked and remains the safe way to test a change t
 
 ## Deployment
 
-Not yet wired. The Fly app is created in Phase 2, alongside the queue contract; until then this
-runs by hand. Secrets will live in Fly rather than in CI, validated at boot by
-`internal/config`, so a missing one fails the release rather than the first render that needs it.
+Merging to `main` deploys. CI runs format, vet, lint, tidy, tests under `-race`, a coverage gate
+and a build, and only a green run reaches `flyctl deploy` — nothing is run by hand.
+
+Secrets live in Fly rather than in CI, and are validated at boot by `internal/config`, which
+reports *every* missing variable at once rather than the first. That is not hypothetical
+tidiness: this app once deployed without `SITE_URL` because the commit setting it went to an
+already-merged branch, and the failure surfaced as a machine that woke, refused to boot, and
+stopped again.
+
+The machine is stopped almost always. A deploy updates a stopped machine's image without starting
+it, which is correct — a deploy should not wake a worker that has nothing to do.
+
+To roll back, list the releases and redeploy the image from a good one:
+
+```bash
+fly releases -a engaging-worker
+```
 
 ## Coverage
 
