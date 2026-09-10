@@ -37,6 +37,15 @@ type Job struct {
 	RequestedAt string `json:"requestedAt"`
 	Force       bool   `json:"force"`
 
+	// Prefix is where the render should be written. Empty is production, which
+	// is what a CMS publish sends and what an older producer that does not
+	// know about this field sends by omission — so absent means production and
+	// the default stays correct.
+	//
+	// It is a whole prefix rather than a flag because it namespaces three
+	// things at once: the object key, the content hash and the render history.
+	Prefix string `json:"prefix,omitempty"`
+
 	// Attempt is which pass this is, counting from one. Set by the consumer
 	// rather than carried in the payload — the producer cannot know it, and
 	// the handler needs it to record what a render cost.

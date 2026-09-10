@@ -69,8 +69,28 @@ type Worker struct {
 // Deriving it from Prefix means one switch moves both the object and its hash:
 // with candidate/ the two services are independent, and at cutover the prefix
 // empties and this becomes exactly the key engaging-service already uses.
-func (w *Worker) hashKey(artifact render.Artifact) string {
-	return w.Prefix + artifact.Key
+func (w *Worker) hashKey(prefix string, artifact render.Artifact) string {
+	return prefix + artifact.Key
+}
+
+/*
+Where this job writes. The job decides, falling back to the worker's own
+
+	setting for the CLI, which has no payload to carry one.
+
+	Absent means production, which is deliberate in both directions: a producer
+	that predates this field sends nothing and gets the right destination, and a
+	candidate render has to ask for one explicitly rather than inherit it. The
+	asymmetry that matters is that a lost prefix re-renders production with
+	identical bytes, while a stray one would leave production stale — so the
+	failure that costs nothing is the one that happens by default.
+*/
+func (w *Worker) prefixFor(job queue.Job) string {
+	if job.Prefix != "" {
+		return job.Prefix
+	}
+
+	return w.Prefix
 }
 
 // Job names, matching the payload engaging-service writes.
@@ -99,7 +119,9 @@ func (w *Worker) Handle(ctx context.Context, job queue.Job) error {
 		urls = append(urls, w.SiteURL+path)
 	}
 
-	live, err := w.assertChanged(ctx, urls, w.hashKey(artifact), job.Force)
+	prefix := w.prefixFor(job)
+
+	live, err := w.assertChanged(ctx, urls, w.hashKey(prefix, artifact), job.Force)
 	if err != nil {
 		return err
 	}
@@ -114,7 +136,7 @@ func (w *Worker) Handle(ctx context.Context, job queue.Job) error {
 	// container.
 	defer browser.Close()
 
-	published, err := w.publish(ctx, browser, job.Job, artifact, urls)
+	published, err := w.publish(ctx, browser, job.Job, prefix, artifact, urls)
 	if err != nil {
 		return err
 	}
@@ -122,7 +144,7 @@ func (w *Worker) Handle(ctx context.Context, job queue.Job) error {
 	// Recorded only after every upload has succeeded, so a run that failed
 	// part-way retries against the same previous hash rather than being
 	// treated as done.
-	if err := w.Store.Set(ctx, w.hashKey(artifact), live); err != nil {
+	if err := w.Store.Set(ctx, w.hashKey(prefix, artifact), live); err != nil {
 		return err
 	}
 
@@ -131,7 +153,7 @@ func (w *Worker) Handle(ctx context.Context, job queue.Job) error {
 	slog.Info("artifact published", "job", job.Job, "result", published,
 		"ms", duration.Milliseconds())
 
-	w.record(ctx, job, published, duration)
+	w.record(ctx, job, prefix, published, duration)
 
 	return nil
 }
@@ -140,12 +162,20 @@ func (w *Worker) Handle(ctx context.Context, job queue.Job) error {
 // published by the time this runs, so a status page that misses an entry is a
 // far better outcome than a render reported as failed and retried — which
 // would re-render and re-upload something already correct.
-func (w *Worker) record(ctx context.Context, job queue.Job, result string, duration time.Duration) {
+func (w *Worker) record(
+	ctx context.Context,
+	job queue.Job,
+	prefix string,
+	result string,
+	duration time.Duration,
+) {
 	if w.History == nil {
 		return
 	}
 
-	err := w.History.Add(ctx, job.Job, records.Record{
+	/* Namespaced like everything else, so a candidate render does not appear
+	   in the history the status page reports as real work. */
+	err := w.History.Add(ctx, prefix+job.Job, records.Record{
 		Result:     result,
 		DurationMs: duration.Milliseconds(),
 		Attempts:   job.Attempt,
@@ -163,11 +193,12 @@ func (w *Worker) publish(
 	ctx context.Context,
 	browser Renderer,
 	job string,
+	prefix string,
 	artifact render.Artifact,
 	urls []string,
 ) (string, error) {
 	if job == StartupImagesJob {
-		return w.uploadStartupImages(ctx, browser, artifact)
+		return w.uploadStartupImages(ctx, browser, prefix, artifact)
 	}
 
 	pdf, err := browser.PDF(urls[0])
@@ -175,7 +206,7 @@ func (w *Worker) publish(
 		return "", err
 	}
 
-	return w.Uploader.Upload(ctx, w.Prefix+artifact.Key, pdf,
+	return w.Uploader.Upload(ctx, prefix+artifact.Key, pdf,
 		artifact.ContentType, artifact.CacheControl)
 }
 
@@ -185,6 +216,7 @@ func (w *Worker) publish(
 func (w *Worker) uploadStartupImages(
 	ctx context.Context,
 	browser Renderer,
+	prefix string,
 	artifact render.Artifact,
 ) (string, error) {
 	captured, err := browser.StartupImages(w.SiteURL)
@@ -193,7 +225,7 @@ func (w *Worker) uploadStartupImages(
 	}
 
 	for _, image := range captured {
-		if _, err := w.Uploader.Upload(ctx, w.Prefix+image.Key, image.Image,
+		if _, err := w.Uploader.Upload(ctx, prefix+image.Key, image.Image,
 			artifact.ContentType, artifact.CacheControl); err != nil {
 			return "", err
 		}

@@ -306,9 +306,9 @@ func TestHashKeyFollowsThePrefix(t *testing.T) {
 	}
 
 	for prefix, want := range cases {
-		w := &Worker{Prefix: prefix}
+		w := &Worker{}
 
-		if got := w.hashKey(render.CVPDF); got != want {
+		if got := w.hashKey(prefix, render.CVPDF); got != want {
 			t.Errorf("prefix %q: want %q, got %q", prefix, want, got)
 		}
 	}
@@ -432,5 +432,111 @@ func TestHandleWithoutAHistory(t *testing.T) {
 
 	if err := w.Handle(context.Background(), job()); err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+/*
+Spike C: can a candidate render and a real one share a process?
+
+	The three things a render writes must all follow the job's prefix, or a
+	demo leaks into production somewhere — the object the site links to, the
+	hash that decides whether the next render is needed, or the history the
+	status page reports.
+*/
+func TestPrefixComesFromTheJob(t *testing.T) {
+	history := &fakeHistory{}
+	w, store, uploader, _ := setup(t, func(w *Worker, _ *fakeStore, _ *fakeUploader, _ *fakeRenderer) {
+		w.Prefix = ""
+		w.History = history
+	})
+
+	err := w.Handle(context.Background(), queue.Job{
+		V: queue.Version, Job: CVPDFJob, Force: true, Prefix: "candidate/",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if uploader.key != "candidate/billy-watson-cv.pdf" {
+		t.Errorf("object: got %q", uploader.key)
+	}
+	if store.set["candidate/billy-watson-cv.pdf"] == "" {
+		t.Errorf("hash: got %+v", store.set)
+	}
+	if history.artifact != "candidate/cv-pdf" {
+		t.Errorf("history: got %q", history.artifact)
+	}
+}
+
+/*
+The direction that matters. A publish carries no prefix, and a producer
+
+	that predates the field carries none either — both must reach production.
+*/
+func TestNoPrefixMeansProduction(t *testing.T) {
+	history := &fakeHistory{}
+	w, _, uploader, _ := setup(t, func(w *Worker, _ *fakeStore, _ *fakeUploader, _ *fakeRenderer) {
+		w.Prefix = ""
+		w.History = history
+	})
+
+	err := w.Handle(context.Background(), queue.Job{
+		V: queue.Version, Job: CVPDFJob, Force: true,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if uploader.key != "billy-watson-cv.pdf" {
+		t.Errorf("object: got %q", uploader.key)
+	}
+	if history.artifact != "cv-pdf" {
+		t.Errorf("history: got %q", history.artifact)
+	}
+}
+
+/*
+Both in one drain is the whole question: the demo and the publish are
+
+	handled by the same process, seconds apart, and must not collide.
+*/
+func TestCandidateAndProductionInOneProcess(t *testing.T) {
+	history := &fakeHistory{}
+	seen := []string{}
+	w, store, uploader, _ := setup(t, func(w *Worker, _ *fakeStore, _ *fakeUploader, _ *fakeRenderer) {
+		w.Prefix = ""
+		w.History = history
+	})
+
+	for _, prefix := range []string{"candidate/", ""} {
+		if err := w.Handle(context.Background(), queue.Job{
+			V: queue.Version, Job: CVPDFJob, Force: true, Prefix: prefix,
+		}); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		seen = append(seen, uploader.key)
+	}
+
+	if seen[0] != "candidate/billy-watson-cv.pdf" || seen[1] != "billy-watson-cv.pdf" {
+		t.Errorf("wrote %v", seen)
+	}
+	// Two hashes, kept apart, so neither render suppresses the other.
+	if len(store.set) != 2 {
+		t.Errorf("expected two hash keys, got %+v", store.set)
+	}
+}
+
+// The CLI has no payload, so its flag still has to reach the render.
+func TestWorkerPrefixIsTheFallback(t *testing.T) {
+	w, _, uploader, _ := setup(t, nil)
+
+	if err := w.Handle(context.Background(), queue.Job{
+		V: queue.Version, Job: CVPDFJob, Force: true,
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if uploader.key != "candidate/billy-watson-cv.pdf" {
+		t.Errorf("expected the worker's own prefix, got %q", uploader.key)
 	}
 }
