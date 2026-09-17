@@ -216,6 +216,15 @@ a dead-letter stream, acked either way so it stops being reclaimed forever. And 
 failed reads end the run: the error floor stops a hot loop, but on its own it would still spin
 indefinitely, and a worker that never returns is a machine that never stops.
 
+**Spending the ladder is not the same as failing.** A job that reaches the last attempt still
+reporting nothing to render is acked like any finished job, because that is what it is: publishing
+twice within minutes queues a second job for content the first already rendered, and publishing
+something that does not appear on `/` or `/cv` changes nothing for this to capture. Seven such
+jobs sat in `render:dead` before the distinction existed, next to failures and indistinguishable
+from them — on a status page whose whole purpose is being looked at. The ladder is still spent
+first: until the last attempt, the page may yet be about to change, which is the race it exists
+for.
+
 ## Three contracts, not one
 
 The payload is the visible contract. The quieter one is `content-hash:<artifact>` — the Redis key

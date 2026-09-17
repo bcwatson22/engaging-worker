@@ -282,6 +282,17 @@ func (c *Consumer) process(ctx context.Context, m redis.XMessage, handle Handler
 		}
 	}
 
+	// Out of attempts and still nothing to render: the job is finished, not
+	// failed. Acked like any other completed job, so render:dead keeps
+	// meaning "look at this".
+	if errors.Is(err, ErrNoWork) {
+		slog.Info("nothing to render", "id", m.ID, "job", job.Job,
+			"attempts", c.opts.Attempts, "err", err)
+		c.ack(ctx, m.ID)
+
+		return
+	}
+
 	c.giveUp(ctx, m, err, c.opts.Attempts)
 }
 

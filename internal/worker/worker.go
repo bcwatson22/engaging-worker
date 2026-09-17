@@ -3,7 +3,6 @@ package worker
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -20,7 +19,14 @@ import (
 // previous render. Returning an error hands the job back to the retry ladder,
 // which waits for the content to change — self-correcting, rather than a tuned
 // delay.
-var ErrUnchanged = errors.New("the page has not changed yet — the site is still revalidating")
+//
+// It wraps queue.ErrNoWork so that a job which spends the whole ladder saying
+// this is acked rather than dead-lettered: a page that never changed had
+// nothing to render, which is a finished job and not a broken one.
+var ErrUnchanged = fmt.Errorf(
+	"%w: the page has not changed yet — the site is still revalidating",
+	queue.ErrNoWork,
+)
 
 // Uploader is the slice of object storage this needs.
 type Uploader interface {

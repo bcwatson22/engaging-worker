@@ -175,8 +175,14 @@ func TestHandleWaitsForTheSiteToCatchUp(t *testing.T) {
 	}
 	store.previous = live
 
-	if err := w.Handle(context.Background(), job()); !errors.Is(err, ErrUnchanged) {
+	err = w.Handle(context.Background(), job())
+	if !errors.Is(err, ErrUnchanged) {
 		t.Fatalf("want ErrUnchanged, got %v", err)
+	}
+	// The consumer reads this rather than the specific error: a page that
+	// never changes has to end the ladder acked, not in render:dead.
+	if !errors.Is(err, queue.ErrNoWork) {
+		t.Errorf("an unchanged page should read as nothing to render: %v", err)
 	}
 	if len(store.set) != 0 {
 		t.Error("nothing should be recorded when nothing was rendered")

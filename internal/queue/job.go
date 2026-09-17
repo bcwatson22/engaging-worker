@@ -90,3 +90,18 @@ func Encode(job Job) string {
 // Everything else is assumed transient: a render that failed once may well
 // succeed on the next attempt, which is the case the ladder exists for.
 var ErrPermanent = errors.New("permanent failure")
+
+// ErrNoWork marks a job with nothing left to do. Wrap it and a job that spends
+// the whole ladder still saying so is acked rather than dead-lettered.
+//
+// It exists because two ordinary things produce it. Publishing twice within a
+// few minutes queues a second job for content the first one has already
+// rendered, and publishing something that does not appear on the rendered
+// pages changes nothing for them to capture. Both are correct outcomes, and
+// recording them in render:dead put them next to genuine failures — where they
+// are indistinguishable from one, on a status page built to be looked at.
+//
+// The ladder is still spent first: this is only how the last attempt is read,
+// because up to that point the page may yet be about to change, which is the
+// race the ladder exists for.
+var ErrNoWork = errors.New("nothing to render")

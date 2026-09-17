@@ -241,6 +241,39 @@ func TestRunRetriesThenDeadLetters(t *testing.T) {
 	}
 }
 
+// Two ordinary things produce this: a second publish within minutes, and a
+// publish that changes nothing on the rendered pages. Both spend the ladder
+// and both are finished work, so neither belongs beside a broken render.
+func TestRunAcksAJobWithNothingToRender(t *testing.T) {
+	c, client, _ := setup(t, func(o *Options) { o.Attempts = 3 })
+	enqueue(t, client, validPayload())
+
+	attempts := 0
+	if err := c.Run(context.Background(), func(context.Context, Job) error {
+		attempts++
+
+		return fmt.Errorf("%w: the page has not changed yet", ErrNoWork)
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// The ladder is still spent: up to the last attempt the page may yet be
+	// about to change, which is the race it exists for.
+	if attempts != 3 {
+		t.Errorf("expected 3 attempts, got %d", attempts)
+	}
+
+	dead, err := client.XRange(context.Background(), DeadLetter, "-", "+").Result()
+	if err != nil || len(dead) != 0 {
+		t.Fatalf("expected no dead letter, got %d (%v)", len(dead), err)
+	}
+
+	pending, _ := client.XPending(context.Background(), Stream, Group).Result()
+	if pending.Count != 0 {
+		t.Errorf("a finished job should be acked, %d pending", pending.Count)
+	}
+}
+
 func TestRunDeadLettersAnUnreadablePayload(t *testing.T) {
 	c, client, _ := setup(t, nil)
 	enqueue(t, client, "{not json")
