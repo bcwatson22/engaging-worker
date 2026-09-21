@@ -365,6 +365,23 @@ To roll back, list the releases and redeploy the image from a good one:
 fly releases -a engaging-worker
 ```
 
+## Maintenance
+
+Dependabot raises the Go modules and the GitHub Actions monthly
+(`.github/dependabot.yml`), grouped into one PR each, and CI proves each PR with
+vet, lint, race tests, the coverage floor and govulncheck. Nothing merges
+without review.
+
+Dependabot rather than the Claude routine the site and the service use, because
+there is little here for an agent to judge. A Go major changes the module path
+(`go-redis/v9` → `/v10`), so it needs import changes and is never proposed —
+what arrives is patch and minor by construction — and with six direct modules,
+"which one broke it" is a glance rather than a search. A major is still a
+deliberate job, done by hand.
+
+Security updates are separate from that file, switched on in the repository's
+settings, and open a PR for a vulnerable version whatever the monthly rules say.
+
 ## Coverage
 
 100% across `internal/`, enforced by CI. `cmd/worker` is a composition root and is excluded; it is
