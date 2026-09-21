@@ -1,0 +1,36 @@
+version: 2
+
+updates:
+  # Go majors change the module path (go-redis/v9 → /v10), so they need import
+  # changes and Dependabot will not propose them. What remains is patch and
+  # minor by construction, grouped so the month is one PR rather than six.
+  # CI already runs vet, lint, race tests, the coverage floor and govulncheck
+  # on it, so the PR arrives proven or visibly not.
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: monthly
+      time: '08:00'
+      timezone: Europe/London
+    groups:
+      go:
+        update-types: [minor, patch]
+    assignees: [bcwatson22]
+    commit-message:
+      prefix: chore
+
+  # Includes the flyctl action, pinned to a SHA because it runs with a deploy
+  # token in scope. Dependabot moves it to a newer SHA through a reviewed PR,
+  # which keeps the reason it was pinned rather than undoing it.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+      time: '08:00'
+      timezone: Europe/London
+    groups:
+      actions:
+        patterns: ['*']
+    assignees: [bcwatson22]
+    commit-message:
+      prefix: ci
