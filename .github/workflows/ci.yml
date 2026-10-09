@@ -19,6 +19,12 @@ jobs:
         with:
           # Tracks go.mod, so CI cannot drift from the Dockerfile.
           go-version-file: go.mod
+          # go.mod names a minor version, and the Dockerfile's golang:1.26
+          # tag follows the newest patch of it. Without this, setup-go is the
+          # only one of the three that doesn't: it reuses whatever patch the
+          # runner image has cached, which is how CI ends up scanning 1.26.8
+          # with a vulnerability database that knows about 1.26.9.
+          check-latest: true
           cache: true
 
       - name: Format
